@@ -2,7 +2,7 @@
 
 Extract structured Knowledge Indicators (KIs) from any document using a self-hosted LLM. Each KI is an atomic fact triple (subject, predicate, object) with evidence span, confidence score, and tags.
 
-![screenshot](assets/screenshot.png)
+![demo](assets/demo.gif)
 
 ## What it does
 
