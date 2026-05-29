@@ -199,7 +199,8 @@ async def fetch_url(url: str) -> tuple[str, str, bool]:
 async def stream_single_extraction(
     body_text: str, extraction_prompt: str, url: str, docid: str,
     round_num: int, seed: int, fact_offset: int,
-    existing_embs: list, existing_indices: list, dedup_threshold: float, dedup_field: str = "triple"
+    existing_embs: list, existing_indices: list, dedup_threshold: float, dedup_field: str = "triple",
+    dedup_enabled: bool = True
 ) -> AsyncGenerator[str, None]:
     full_prompt = f"{extraction_prompt}\n\nDocument:\n  docid: {docid}\n  url: {url or 'n/a'}\n  text: {body_text}"
     prompt_tokens_est = len(full_prompt) // 4
@@ -263,30 +264,36 @@ async def stream_single_extraction(
                 if token_count % 5 == 0:
                     new_facts = parse_facts_incremental(content_buf, parsed_hashes)
                     for fact in new_facts:
-                        emb = embed_fact(fact, dedup_field)
-                        is_dup, max_sim, dup_of = check_duplicate(emb, existing_embs, existing_indices, dedup_threshold)
                         round_facts += 1
                         total_idx = fact_offset + round_facts
-                        if is_dup:
-                            round_dupes += 1
+                        if dedup_enabled:
+                            emb = embed_fact(fact, dedup_field)
+                            is_dup, max_sim, dup_of = check_duplicate(emb, existing_embs, existing_indices, dedup_threshold)
+                            if is_dup:
+                                round_dupes += 1
+                            else:
+                                existing_embs.append(emb)
+                                existing_indices.append(total_idx)
                         else:
-                            existing_embs.append(emb)
-                            existing_indices.append(total_idx)
+                            is_dup, max_sim, dup_of = False, 0.0, []
                         yield f"data: {json.dumps({'type': 'fact', 'round': round_num, 'index': total_idx, 'fact': fact, 'is_duplicate': is_dup, 'max_similarity': round(max_sim, 4), 'dup_of': dup_of, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1)})}\n\n"
 
     elapsed = time.time() - start_time
     tps = token_count / elapsed if elapsed > 0 else 0
     new_facts = parse_facts_incremental(content_buf, parsed_hashes)
     for fact in new_facts:
-        emb = embed_fact(fact, dedup_field)
-        is_dup, max_sim, dup_of = check_duplicate(emb, existing_embs, existing_indices, dedup_threshold)
         round_facts += 1
         total_idx = fact_offset + round_facts
-        if is_dup:
-            round_dupes += 1
+        if dedup_enabled:
+            emb = embed_fact(fact, dedup_field)
+            is_dup, max_sim, dup_of = check_duplicate(emb, existing_embs, existing_indices, dedup_threshold)
+            if is_dup:
+                round_dupes += 1
+            else:
+                existing_embs.append(emb)
+                existing_indices.append(total_idx)
         else:
-            existing_embs.append(emb)
-            existing_indices.append(total_idx)
+            is_dup, max_sim, dup_of = False, 0.0, []
         yield f"data: {json.dumps({'type': 'fact', 'round': round_num, 'index': total_idx, 'fact': fact, 'is_duplicate': is_dup, 'max_similarity': round(max_sim, 4), 'dup_of': dup_of, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1)})}\n\n"
 
     cached_note = "(prompt cached)" if round_num > 1 else ""
@@ -302,6 +309,7 @@ async def extract(request: Request):
     extraction_prompt = body.get("prompt", DEFAULT_PROMPT).strip()
     dedup_threshold = float(body.get("dedup_threshold", 0.90))
     dedup_field = body.get("dedup_field", "triple")
+    dedup_enabled = bool(body.get("dedup_model", "v5-nano"))
 
     async def event_stream():
         global _active_extractions, _queue_counter, _done_counter
@@ -341,6 +349,7 @@ async def extract(request: Request):
                     existing_embs=existing_embs,
                     existing_indices=existing_indices,
                     dedup_threshold=dedup_threshold, dedup_field=dedup_field,
+                    dedup_enabled=dedup_enabled,
                 ):
                     yield event
                     if event.startswith("data: "):
@@ -587,7 +596,13 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;hei
 
     <div class="section">
       <div class="section-title">Deduplication</div>
-      <div class="dedup-model">jina-embeddings-v5-text-nano (CPU)</div>
+      <div class="param-row" style="margin:0;margin-bottom:6px">
+        <label>Model</label>
+        <select id="dedup-model" class="dedup-select">
+          <option value="v5-nano" selected>jina-embeddings-v5-text-nano (CPU)</option>
+          <option value="">None (disable dedup)</option>
+        </select>
+      </div>
       <div style="margin-top:6px">
         <div class="param-row" style="margin:0;margin-bottom:6px">
           <label>Field</label>
@@ -660,6 +675,13 @@ fetch('/api/default-prompt').then(r=>r.json()).then(d=>{
   defaultPrompt=d.prompt;
   document.getElementById('prompt-edit').value=d.prompt;
 });
+
+function toggleDedupControls(){
+  const on=document.getElementById('dedup-model').value!=='';
+  document.getElementById('dedup-field').disabled=!on;
+  document.getElementById('dedup-slider').disabled=!on;
+}
+document.getElementById('dedup-model').addEventListener('change',toggleDedupControls);
 
 function resetPrompt(){document.getElementById('prompt-edit').value=defaultPrompt}
 function updateEstimate(){
@@ -760,7 +782,8 @@ async function extract(){
   const prompt=document.getElementById('prompt-edit').value;
   const threshold=parseFloat(document.getElementById('dedup-slider').value);
   const dedupField=document.getElementById('dedup-field').value;
-  const payload={k, prompt, dedup_threshold: threshold, dedup_field: dedupField};
+  const dedupModel=document.getElementById('dedup-model').value;
+  const payload={k, prompt, dedup_threshold: threshold, dedup_field: dedupField, dedup_model: dedupModel};
   if(currentTab==='url') payload.url=document.getElementById('url').value;
   else payload.text=document.getElementById('text-paste').value;
 
