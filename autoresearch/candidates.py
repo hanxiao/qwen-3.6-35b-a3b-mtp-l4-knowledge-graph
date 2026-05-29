@@ -176,9 +176,27 @@ BATCH10 = [
     nsc("q3_noschema",    "Q3 + win, NO json-schema grammar", **WIN),
 ]
 
+# ----- Batch 11: IS MTP EVEN HELPING? (literature-driven, lossless)
+# thc1006's RTX-3090 benchmark + MoESD (2505.19645) / Utility-Driven SD
+# (2506.20675): for 3B-active MoE, expert-saturation threshold ~94 >> draft K,
+# so the verify pass loads the expert union with no amortization -> spec-decode
+# is often NET-NEGATIVE even at 100% acceptance. I tuned MTP but never tested
+# turning it OFF. --spec-type none = pure autoregressive (exact/lossless). If it
+# beats MTP, the repo's whole premise is wrong on this hardware.
+def nospec(id, desc, model):
+    return cfg(id, desc, model=model,
+               **{"--spec-type": "none", "--spec-draft-n-max": None})
+BATCH11 = [
+    cfg("q4_mtp_ab",  "Q4 + MTP win (A/B control)", model=Q4, **WIN),
+    nospec("q4_none", "Q4 + NO spec decoding (pure autoregressive)", Q4),
+    cfg("q3_mtp_ab",  "Q3 + MTP win (A/B control = current winner)", model=Q3_K_XL, **WIN),
+    nospec("q3_none", "Q3 + NO spec decoding (pure autoregressive)", Q3_K_XL),
+]
+
 BATCHES = {"batch1": BATCH1, "batch2": BATCH2, "batch3": BATCH3,
            "batch4": BATCH4, "batch5": BATCH5, "batch6": BATCH6,
-           "batch7": BATCH7, "batch8": BATCH8, "batch9": BATCH9, "batch10": BATCH10}
+           "batch7": BATCH7, "batch8": BATCH8, "batch9": BATCH9,
+           "batch10": BATCH10, "batch11": BATCH11}
 
 if __name__ == "__main__":
     name = sys.argv[1] if len(sys.argv) > 1 else "batch1"

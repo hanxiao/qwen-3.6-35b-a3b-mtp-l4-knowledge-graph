@@ -22,6 +22,15 @@ ctx, schema grammar, MXFP4), harmful (parallelism −10%, mixed-KV −57%), or
 quality-breaking (sub-3.5bpw, i-quants). Decode is bandwidth-bound at a fixed
 ~33% efficiency, so going further needs a quality tradeoff or a different engine
 (FP8 + grammar jump-forward) — outside the llama.cpp+MTP repo.
+
+**Verified the MTP premise (literature-driven A/B).** Published benchmarks
+(thc1006 on RTX-3090; MoESD; Utility-Driven SD) find spec-decode net-negative for
+3B-active MoE on consumer Ampere. Testing `--spec-type none` on the L4 shows the
+opposite: MTP gives +13% at Q4 and **+39% at Q3** — on a bandwidth-starved L4 the
+expensive forward passes make MTP's amortization pay off, unlike the fast 3090.
+A deeper finding: pure autoregressive is ~52-54 t/s *regardless of Q4 vs Q3*
+(overhead-bound), so the quant win is realized *through* MTP — MTP and low-bit
+quant are **synergistic**, not independent. MTP is load-bearing here; keep it.
 - **Quality preserved:** Q3's KI count (22.8 ≈ 22.6), groundedness (0.67 ≥ 0.61),
   and coverage (cov_min 0.952 == baseline's own cross-seed self-coverage) match
   baseline; a manual fact spot-check confirmed correct, verbatim-grounded facts.

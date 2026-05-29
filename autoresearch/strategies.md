@@ -86,7 +86,36 @@ k-quant is the floor.
   75.4 (within noise). The grammar mask is ~free at decode time, and it
   guarantees valid JSON -> keep it.
 
-## SEARCH CONVERGED (rounds 1+2, ~30 experiments)
+## LITERATURE-DRIVEN CHECK: is MTP even helping? (batch11) — YES, it's load-bearing
+
+Prompted to dig the literature (MoESD arXiv 2505.19645, Utility-Driven SD for MoE
+arXiv 2506.20675, and thc1006's 19-config RTX-3090 benchmark) which all report
+spec-decode is NET-NEGATIVE for 3B-active MoE on consumer Ampere (expert-
+saturation T_thres~94 >> draft K). I had tuned MTP but never tested OFF. So I
+A/B'd `--spec-type none` (pure autoregressive, exact/lossless):
+
+| config | decode t/s | MTP effect |
+|---|---|---|
+| Q4 + MTP | 58.3 | +13% |
+| Q4 no-spec | 51.7 | |
+| **Q3 + MTP** | **75.5** | **+39%** |
+| Q3 no-spec | 54.3 | |
+
+Two findings, both contradicting/refining the prior framing:
+1. **MTP HELPS on L4 — opposite of the 3090 result.** On the fast 3090, forward
+   passes are cheap so the expert-union verify overhead dominates -> spec loses.
+   On bandwidth-starved L4 (~300 GB/s), passes are expensive so MTP's
+   pass-amortization wins big. Hardware-class-dependent (matches thc1006's
+   retraction of the "hardware-independent" claim).
+2. **The quant win is realized THROUGH MTP, not independently.** Pure
+   autoregressive is ~52-54 t/s REGARDLESS of Q4 vs Q3 (per-token-overhead-bound,
+   not weight-bandwidth-bound at bs=1). Only WITH MTP does lighter Q3 translate
+   to speed (58->75). MTP x low-bit quant are SYNERGISTIC. Earlier "pure
+   bandwidth, bits is the lever" was incomplete: it's bits-realized-via-MTP.
+
+So MTP is essential and Q3+MTP stands, now mechanistically understood.
+
+## SEARCH CONVERGED (rounds 1+2, ~31 experiments)
 
 Quality-safe decode-rate levers are exhausted within the llama.cpp+MTP stack:
 - WIN: Q3_K_XL quant (+34%) x MTP n3+p-min0.1 (+2%). Combined **56.5 -> 75.9 t/s**.
