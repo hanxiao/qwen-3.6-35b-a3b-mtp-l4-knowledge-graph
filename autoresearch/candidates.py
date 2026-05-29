@@ -24,9 +24,9 @@ CANON = {
     "-fitt": "512", "--cache-reuse": "256",
 }
 
-def args(**ov):
+def args(model=H.MODEL_PATH, **ov):
     d = dict(CANON); d.update(ov)
-    out = ["--model", H.MODEL_PATH, "--host", "0.0.0.0", "--port", "8080"]
+    out = ["--model", model, "--host", "0.0.0.0", "--port", "8080"]
     for k, v in d.items():
         if v is None:
             continue
@@ -37,8 +37,11 @@ def args(**ov):
 
 SAMP = dict(H.BASELINE_SAMPLING)
 
-def cfg(id, desc, **ov):
-    return {"id": id, "desc": desc, "server_args": args(**ov), "sampling": SAMP}
+# winning serving flags from round 1 (confirmed +2.9%): carry into round-2 probes
+WIN = {"--spec-draft-n-max": "3", "--spec-draft-p-min": "0.1"}
+
+def cfg(id, desc, model=H.MODEL_PATH, **ov):
+    return {"id": id, "desc": desc, "server_args": args(model=model, **ov), "sampling": SAMP}
 
 # ----- Batch 1: single-variable probes -----
 BATCH1 = [
@@ -91,7 +94,30 @@ BATCH3 = [
          **{"--parallel": "3", "--ctx-size": "36864"}),
 ]
 
-BATCHES = {"batch1": BATCH1, "batch2": BATCH2, "batch3": BATCH3}
+# ----- Batch 4: lower-bit quant of the SAME model (bandwidth lever).
+# Decode is memory-bandwidth bound, so fewer bits/weight should scale decode
+# ~linearly. Q4_K_XL ~4.5bpw -> Q3_K_XL ~3.5bpw (UD = unsloth dynamic, keeps
+# sensitive layers higher precision for quality retention). All at the round-1
+# winning serving flags. Quality guard = coverage_of_baseline vs the Q4 baseline.
+Q4 = H.MODEL_PATH
+Q3_K_XL = "/models/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf"
+BATCH4 = [
+    cfg("q4_win",     "Q4_K_XL @ winning flags (same-session speed control)", model=Q4, **WIN),
+    cfg("q3kxl_win",  "UD-Q3_K_XL @ winning flags (~3.5bpw, bandwidth lever)", model=Q3_K_XL, **WIN),
+]
+
+# ----- Batch 5: push the bit-width frontier below Q3 to find the quality cliff.
+# Q3_K_XL (~3.5bpw) already gave +34% at coverage 1.0. Each step down = more
+# speed (bandwidth) but rising quality risk. UD quants protect sensitive layers.
+IQ3_XXS = "/models/Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"  # ~3.1bpw
+Q2_K_XL = "/models/Qwen3.6-35B-A3B-UD-Q2_K_XL.gguf"  # ~2.7bpw
+BATCH5 = [
+    cfg("iq3xxs_win", "UD-IQ3_XXS @ win (~3.1bpw)", model=IQ3_XXS, **WIN),
+    cfg("q2kxl_win",  "UD-Q2_K_XL @ win (~2.7bpw, aggressive)", model=Q2_K_XL, **WIN),
+]
+
+BATCHES = {"batch1": BATCH1, "batch2": BATCH2, "batch3": BATCH3,
+           "batch4": BATCH4, "batch5": BATCH5}
 
 if __name__ == "__main__":
     name = sys.argv[1] if len(sys.argv) > 1 else "batch1"

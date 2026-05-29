@@ -13,7 +13,37 @@ this file holds the *why*.
 - Hardware: L4 24GB, VRAM ~21.8/22.5 GB used at ctx 16384 f16 KV (95% full ->
   the auto-fit (`-fitt 512`) is near its offload edge; freeing VRAM is the lever).
 
-## WINNER (5-repeat confirmed)
+## ROUND 2 (quant unlocked) — BIG WIN
+
+User relaxed the constraint: different quantization of the same model is allowed
+if quality holds. Since decode is memory-bandwidth bound, fewer bits/weight ->
+proportionally faster decode. Confirmed:
+
+- **UD-Q3_K_XL (~3.5bpw) @ winning flags: decode 75.39 t/s** vs Q4_K_XL@win 58.29
+  vs baseline 56.19 = **+34% over baseline**, coverage 1.0, 23 unique facts,
+  ground 0.565. Single-run; reconfirming with repeats + frontier probe (IQ3/Q2).
+  Scaling matches theory: 4.5/3.5 bpw ~= 1.29x, observed 75.4/58.3 = 1.29x.
+- Bandwidth-bound thesis (round 1) now turned into the main lever: drop bits.
+- Grammar jump-forward: dead end in llama.cpp (only masks logits, no jump-ahead;
+  that's SGLang/vLLM/outlines). The rigid JSON already boosts MTP acceptance.
+
+**Quant speed/quality frontier (single-run @ winning flags):**
+
+| quant | bpw | decode t/s | Δ base | cov | ground | verdict |
+|---|---|---|---|---|---|---|
+| Q4_K_XL | 4.5 | 58.3 | +4% | 1.0 | 0.60 | baseline quality |
+| Q3_K_XL | 3.5 | 75.4 | +34% | 1.0 | 0.565 | KEEP |
+| **IQ3_XXS** | 3.1 | **78.7** | **+40%** | 1.0 | 0.75 | **KEEP (best)** |
+| Q2_K_XL | 2.7 | 85.4 | +52% | 1.0 | **0.263** | REJECT (cliff) |
+
+**Cliff at Q2 (2.7bpw):** decode keeps rising but groundedness collapses to 0.26
+-- the model fabricates/paraphrases evidence_span instead of quoting verbatim.
+Key: coverage stayed 1.0 even for broken Q2, so coverage ALONE would have passed
+it; groundedness is the guard that caught the degradation. IQ3_XXS (3.1bpw) is
+the speed-optimal quality-preserving point. Confirming with 5 repeats + manual
+fact spot-check vs Q4.
+
+## WINNER (round 1, 5-repeat confirmed)
 
 **`--spec-draft-n-max 3 --spec-draft-p-min 0.1`**: decode **57.84 +- 0.59 t/s
 vs baseline 56.19 +- 0.29 = +2.9%**, task_tps 57.4 vs 55.8. coverage_of_baseline

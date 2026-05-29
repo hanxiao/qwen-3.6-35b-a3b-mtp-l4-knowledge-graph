@@ -6,23 +6,27 @@ Ranked by task throughput (tokens/sec for the 3-round task). decode_tps = per-st
 
 | rank | id | task tok/s | vs base | decode tok/s | par | unique | cov | ground | verdict | desc |
 |---|---|---|---|---|---|---|---|---|---|---|
-| 1 | mtp_n3 | 57.58 | +4.8% | 57.58 | - | 20 | 1.0 | 0.6 | REJECT | MTP draft n-max 3 |
-| 2 | mtp_n3_min1 | 57.56 | +4.7% | 57.56 | - | 20 | 1.0 | 0.6 | REJECT | MTP n-max 3 n-min 1 |
-| 3 | ctx12k | 56.61 | +3.0% | 56.61 | - | 21 | 1.0 | 0.524 | KEEP | ctx 12288 (smaller KV -> less offloa |
-| 4 | mtp_n4 | 56.61 | +3.0% | 56.61 | - | 23 | 1.0 | 0.478 | REJECT | MTP draft n-max 4 |
-| 5 | kv_q8 | 56.4 | +2.6% | 56.4 | - | 22 | 1.0 | 0.636 | QUALITY_OK_NO_SPEEDUP | KV cache q8_0 k+v (frees VRAM, tiny  |
-| 6 | kv_q4 | 56.22 | +2.3% | 56.22 | - | 22 | 1.0 | 0.545 | QUALITY_OK_NO_SPEEDUP | KV cache q4_0 k+v (max VRAM saving,  |
-| 7 | mtp_n3_pmin01 | 56.06 | +2.0% | 58.01 | - | 20 | 1.0 | 0.6 | KEEP | n3 + p-min 0.1 |
-| 8 | mtp_n3_pmin03 | 55.93 | +1.8% | 57.86 | - | 22 | 1.0 | 0.545 | KEEP | n3 + p-min 0.3 |
-| 9 | mtp_n3_rc | 55.9 | +1.7% | 57.83 | - | 20 | 1.0 | 0.6 | KEEP | MTP n-max 3 (build default; reconfir |
-| 10 | mtp_n2_ctrl | 55.21 | +0.5% | 57.02 | - | 21 | 1.0 | 0.524 | QUALITY_OK_NO_SPEEDUP | MTP n-max 2 (repo's override, contro |
-| 11 | baseline | 54.95 | +0.0% | 56.72 | - | 21 | 1.0 | 0.524 | baseline | repo defaults (docker-compose.yml) |
-| 12 | mtp_n4_pmin03 | 53.54 | +-2.6% | 54.99 | - | 27 | 1.0 | 0.63 | QUALITY_OK_NO_SPEEDUP | n4 + p-min 0.3 |
-| 13 | mtp_n3_pmin05 | 53.45 | +-2.7% | 55.07 | - | 21 | 1.0 | 0.714 | QUALITY_OK_NO_SPEEDUP | n3 + p-min 0.5 |
-| 14 | par2 | 51.51 | +-6.3% | 32.3 | Y | 20 | 1.0 | 0.7 | REJECT | parallel 2 slots, ctx16384 (8192/slo |
-| 15 | mtp_n5_pmin05 | 50.85 | +-7.5% | 52.5 | - | 24 | 1.0 | 0.417 | REJECT | n5 + p-min 0.5 |
-| 16 | par3_mtp3 | 50.51 | +-8.1% | 18.5 | Y | 22 | 1.0 | 0.5 | REJECT | parallel 3 + MTP n-max 3 (stack batc |
-| 17 | par3_q8 | 49.82 | +-9.3% | 17.97 | Y | 20 | 0.952 | 0.45 | REJECT | parallel 3 + KV q8 (VRAM-safe), ctx2 |
-| 18 | par3 | 49.82 | +-9.3% | 18.19 | Y | 19 | 1.0 | 0.474 | REJECT | parallel 3 slots, ctx24576 (8192/slo |
-| 19 | par3_clean | 49.03 | +-10.8% | 17.79 | Y | 21 | 1.0 | 0.333 | REJECT | parallel 3, ctx36864 (12288/slot, no |
-| 20 | kv_q8k_f16v | 24.04 | +-56.3% | 24.04 | - | 26 | 1.0 | 0.5 | REJECT | KV k=q8_0 v=f16 (flash-attn likes f1 |
+| 1 | q2kxl_win | 82.27 | +49.7% | 85.41 | - | 19 | 1.0 | 0.263 | REJECT | UD-Q2_K_XL @ win (~2.7bpw, aggressiv |
+| 2 | iq3xxs_win | 76.44 | +39.1% | 78.72 | - | 24 | 1.0 | 0.75 | KEEP | UD-IQ3_XXS @ win (~3.1bpw) |
+| 3 | q3kxl_win | 73.07 | +33.0% | 75.39 | - | 23 | 1.0 | 0.565 | KEEP | UD-Q3_K_XL @ winning flags (~3.5bpw, |
+| 4 | mtp_n3 | 57.58 | +4.8% | 57.58 | - | 20 | 1.0 | 0.6 | REJECT | MTP draft n-max 3 |
+| 5 | mtp_n3_min1 | 57.56 | +4.7% | 57.56 | - | 20 | 1.0 | 0.6 | REJECT | MTP n-max 3 n-min 1 |
+| 6 | ctx12k | 56.61 | +3.0% | 56.61 | - | 21 | 1.0 | 0.524 | KEEP | ctx 12288 (smaller KV -> less offloa |
+| 7 | mtp_n4 | 56.61 | +3.0% | 56.61 | - | 23 | 1.0 | 0.478 | REJECT | MTP draft n-max 4 |
+| 8 | kv_q8 | 56.4 | +2.6% | 56.4 | - | 22 | 1.0 | 0.636 | QUALITY_OK_NO_SPEEDUP | KV cache q8_0 k+v (frees VRAM, tiny  |
+| 9 | q4_win | 56.36 | +2.6% | 58.29 | - | 20 | 1.0 | 0.6 | KEEP | Q4_K_XL @ winning flags (same-sessio |
+| 10 | kv_q4 | 56.22 | +2.3% | 56.22 | - | 22 | 1.0 | 0.545 | QUALITY_OK_NO_SPEEDUP | KV cache q4_0 k+v (max VRAM saving,  |
+| 11 | mtp_n3_pmin01 | 56.06 | +2.0% | 58.01 | - | 20 | 1.0 | 0.6 | KEEP | n3 + p-min 0.1 |
+| 12 | mtp_n3_pmin03 | 55.93 | +1.8% | 57.86 | - | 22 | 1.0 | 0.545 | KEEP | n3 + p-min 0.3 |
+| 13 | mtp_n3_rc | 55.9 | +1.7% | 57.83 | - | 20 | 1.0 | 0.6 | KEEP | MTP n-max 3 (build default; reconfir |
+| 14 | mtp_n2_ctrl | 55.21 | +0.5% | 57.02 | - | 21 | 1.0 | 0.524 | QUALITY_OK_NO_SPEEDUP | MTP n-max 2 (repo's override, contro |
+| 15 | baseline | 54.95 | +0.0% | 56.72 | - | 21 | 1.0 | 0.524 | baseline | repo defaults (docker-compose.yml) |
+| 16 | mtp_n4_pmin03 | 53.54 | +-2.6% | 54.99 | - | 27 | 1.0 | 0.63 | QUALITY_OK_NO_SPEEDUP | n4 + p-min 0.3 |
+| 17 | mtp_n3_pmin05 | 53.45 | +-2.7% | 55.07 | - | 21 | 1.0 | 0.714 | QUALITY_OK_NO_SPEEDUP | n3 + p-min 0.5 |
+| 18 | par2 | 51.51 | +-6.3% | 32.3 | Y | 20 | 1.0 | 0.7 | REJECT | parallel 2 slots, ctx16384 (8192/slo |
+| 19 | mtp_n5_pmin05 | 50.85 | +-7.5% | 52.5 | - | 24 | 1.0 | 0.417 | REJECT | n5 + p-min 0.5 |
+| 20 | par3_mtp3 | 50.51 | +-8.1% | 18.5 | Y | 22 | 1.0 | 0.5 | REJECT | parallel 3 + MTP n-max 3 (stack batc |
+| 21 | par3_q8 | 49.82 | +-9.3% | 17.97 | Y | 20 | 0.952 | 0.45 | REJECT | parallel 3 + KV q8 (VRAM-safe), ctx2 |
+| 22 | par3 | 49.82 | +-9.3% | 18.19 | Y | 19 | 1.0 | 0.474 | REJECT | parallel 3 slots, ctx24576 (8192/slo |
+| 23 | par3_clean | 49.03 | +-10.8% | 17.79 | Y | 21 | 1.0 | 0.333 | REJECT | parallel 3, ctx36864 (12288/slot, no |
+| 24 | kv_q8k_f16v | 24.04 | +-56.3% | 24.04 | - | 26 | 1.0 | 0.5 | REJECT | KV k=q8_0 v=f16 (flash-attn likes f1 |

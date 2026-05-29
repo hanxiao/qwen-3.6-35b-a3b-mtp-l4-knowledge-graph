@@ -1,4 +1,34 @@
-# autoresearch final report — Qwen3.6-35B-A3B KI-extraction decode throughput on L4
+# autoresearch report — Qwen3.6-35B-A3B KI-extraction decode throughput on L4
+
+## Headline (round 2): +34% decode, zero quality loss
+
+Decode is memory-bandwidth bound, so the biggest lever is **bits-per-weight**.
+Switching the same model from Q4_K_XL (~4.5bpw) to **UD-Q3_K_XL (~3.5bpw)**, at
+the round-1 winning MTP flags, gives a confirmed **+34% decode** with KI count,
+coverage and groundedness all preserved.
+
+| config (5-repeat mean±std) | decode tok/s | Δ vs base | unique KIs | cov_min | ground |
+|---|---|---|---|---|---|
+| baseline Q4_K_XL @ default | 56.67 ± 0.38 | — | 22.6 | 0.952 | 0.61 |
+| **Q3_K_XL @ win flags** | **75.94 ± 0.41** | **+34.0%** | **22.8** | 0.952 | 0.67 |
+| IQ3_XXS @ win (rejected) | 78.41 ± 0.84 | +38.4% | 15.4 ⚠ | 0.952 | 0.57 |
+
+Combined with the round-1 MTP tuning, total is **56.46 → 75.9 tok/s, +34%**.
+- **Quality preserved:** Q3's KI count (22.8 ≈ 22.6), groundedness (0.67 ≥ 0.61),
+  and coverage (cov_min 0.952 == baseline's own cross-seed self-coverage) match
+  baseline; a manual fact spot-check confirmed correct, verbatim-grounded facts.
+- **Quality cliff mapped:** IQ3_XXS (3.1bpw) is faster but drops to 15.4 KIs
+  (~32% fewer) — rejected. Q2_K_XL (2.7bpw) hits 85 t/s but groundedness
+  collapses to 0.26 (fabricated evidence). So ~3.5bpw (k-quant) is the floor that
+  preserves this task's quality; the i-quant IQ3_XXS loses extraction completeness
+  at similar bpw.
+- **Apply:** `docker-compose.yml` and `scripts/setup.sh` now default to Q3_K_XL.
+
+The round-1 serving-flag analysis follows.
+
+---
+
+# Round 1 — serving flags (decode tuning at fixed Q4 quant)
 
 **Goal:** push decode tok/s on the 3-round KI-extraction task to its limit on a
 single NVIDIA L4 24GB, with zero quality loss, no model change, no GPU change.

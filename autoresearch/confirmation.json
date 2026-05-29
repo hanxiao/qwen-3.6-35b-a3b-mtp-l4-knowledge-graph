@@ -2,17 +2,17 @@
   {
     "id": "baseline",
     "repeats": 5,
-    "decode_mean": 56.19,
-    "decode_std": 0.29,
+    "decode_mean": 56.67,
+    "decode_std": 0.38,
     "decode_all": [
-      56.46,
-      56.01,
-      55.94,
-      55.92,
-      56.62
+      56.87,
+      56.41,
+      56.51,
+      56.24,
+      57.31
     ],
-    "task_mean": 55.79,
-    "task_std": 0.5,
+    "task_mean": 56.26,
+    "task_std": 0.6,
     "uniq_mean": 22.6,
     "uniq_all": [
       23,
@@ -26,55 +26,55 @@
     "ground_mean": 0.61
   },
   {
-    "id": "mtp_n3_pmin01",
+    "id": "q3kxl_win",
     "repeats": 5,
-    "decode_mean": 57.84,
-    "decode_std": 0.59,
+    "decode_mean": 75.94,
+    "decode_std": 0.41,
     "decode_all": [
-      57.21,
-      57.16,
-      57.83,
-      58.61,
-      58.37
+      75.86,
+      75.17,
+      76.14,
+      76.24,
+      76.27
     ],
-    "task_mean": 57.4,
-    "task_std": 1.07,
-    "uniq_mean": 22,
+    "task_mean": 75.3,
+    "task_std": 0.98,
+    "uniq_mean": 22.8,
     "uniq_all": [
-      23,
       24,
-      20,
-      22,
-      21
-    ],
-    "cov_mean": 1.0,
-    "cov_min": 1.0,
-    "ground_mean": 0.56
-  },
-  {
-    "id": "mtp_n3_pmin03",
-    "repeats": 5,
-    "decode_mean": 57.43,
-    "decode_std": 0.72,
-    "decode_all": [
-      58.16,
-      58.13,
-      56.2,
-      57.29,
-      57.35
-    ],
-    "task_mean": 56.97,
-    "task_std": 0.67,
-    "uniq_mean": 21.6,
-    "uniq_all": [
-      22,
+      24,
+      19,
       21,
-      23,
-      22,
-      20
+      26
     ],
     "cov_mean": 0.99,
     "cov_min": 0.952,
-    "ground_mean": 0.52
+    "ground_mean": 0.67
+  },
+  {
+    "id": "iq3xxs_win",
+    "repeats": 5,
+    "decode_mean": 78.41,
+    "decode_std": 0.84,
+    "decode_all": [
+      79.41,
+      77.1,
+      78.63,
+      77.86,
+      79.06
+    ],
+    "task_mean": 76.39,
+    "task_std": 2.76,
+    "uniq_mean": 15.4,
+    "uniq_all": [
+      14,
+      21,
+      16,
+      13,
+      13
+    ],
+    "cov_mean": 0.98,
+    "cov_min": 0.952,
+    "ground_mean": 0.57
   }
 ]

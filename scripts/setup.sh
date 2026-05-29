@@ -23,14 +23,15 @@ if ! dpkg -l | grep -q nvidia-container-toolkit; then
 fi
 
 echo "=== Downloading model ==="
+# Q3_K_XL (~3.5bpw): benchmarked at +34% decode vs Q4_K_XL with no quality loss
+# on the KI-extraction task (decode is memory-bandwidth bound; see autoresearch/).
 mkdir -p models
-if [ ! -f models/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf ]; then
+if [ ! -f models/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf ]; then
     pip install -q huggingface-hub
-    huggingface-cli download unsloth/Qwen3.6-35B-A3B-MTP-GGUF \
-        Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf \
-        --local-dir models \
-        --local-dir-use-symlinks False
-    mv models/Qwen3.6-35B-A3B-UD-Q4_K_XL.gguf models/Qwen3.6-35B-A3B-MTP-UD-Q4_K_XL.gguf
+    # use the Python API (the hf/huggingface-cli console script is often not on PATH)
+    python3 -c "from huggingface_hub import hf_hub_download; \
+hf_hub_download('unsloth/Qwen3.6-35B-A3B-MTP-GGUF', \
+'Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf', local_dir='models')"
 else
     echo "Model already downloaded."
 fi
