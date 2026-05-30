@@ -1,0 +1,8 @@
+[
+  {
+    "id": "lfm25_a1b_q4",
+    "desc": "LFM2.5-8B-A1B Q4_K_M, OG prompt+schema, nothink (reasoning-budget 0)",
+    "server_args": ["--model","/models/LFM2.5-8B-A1B-Q4_K_M.gguf","--host","0.0.0.0","--port","8080","--ctx-size","16384","--flash-attn","1","--threads","8","--n-predict","8192","--jinja","--n-gpu-layers","999","--cache-reuse","256","--reasoning-budget","0"],
+    "sampling": {"temperature":0.7,"top_p":0.8,"top_k":20,"min_p":0.0,"presence_penalty":1.5,"max_tokens":8192}
+  }
+]

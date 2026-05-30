@@ -244,3 +244,28 @@ else was inert or harmful (see BAD). Decode is memory-bandwidth bound at
 - H5: `--parallel N` + concurrent rounds raises aggregate task_tps (batch2).
 - H6: stack parallel + mtp_n3.
 - H7: if parallel helps, push --parallel to 4-6 with continuous batching.
+
+## MODEL SWAP: LiquidAI LFM2.5-8B-A1B (1B active) — REJECTED for this task
+
+Swapped the model (kept the OG prompt + JSON schema), Q4_K_M, on the same L4.
+LFM2.5 is a reasoning model; tested both modes:
+
+| mode | decode t/s | out tok/round | wall/round | facts | triple fields | verdict |
+|---|---|---|---|---|---|---|
+| nothink (--reasoning-budget 0) | 131 | ~1200 | ~10s | 22/round but | **S/P/O/evidence ALL EMPTY** | useless KIs (dedup->1, ground 0) |
+| thinking (default) | ~125 | ~7600 (25k-char reasoning) | ~61s | ~10 | filled, plausible | proper but FEWER, no speed win |
+
+Findings:
+- At 1B active, LFM2.5 CANNOT do the structured extraction without reasoning:
+  nothink yields title-only shells (subject/predicate/object/evidence_span all
+  ""), so every "fact" collapses (dedup 69->1, groundedness 0).
+- With thinking on it fills the triples, but the 25k-char reasoning costs ~7600
+  tok/round -> ~61s/round (≈ Qwen's wall, erasing the per-token speed edge) and
+  yields only ~10 facts vs Qwen's ~22.
+- Qwen3.6-35B-A3B Q3 wins on quality-per-second: 22 grounded facts, ~120s/3
+  rounds, vs LFM-thinking ~10 facts, ~180s/3 rounds.
+Caveats: used Qwen sampling (temp0.7, presence_penalty1.5) not LFM-recommended;
+OG prompt is complex for a 1B-active model. But empty-triples is a capability
+gap, not a sampling artifact. Conclusion: LFM2.5-8B-A1B is not a viable swap for
+this structured KI task. (harness parse_facts now strips <think> for reasoning
+models.)

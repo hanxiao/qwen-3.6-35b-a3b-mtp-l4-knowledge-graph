@@ -87,19 +87,27 @@ def pred_diversity(facts):
 
 def run_arm(prompt):
     rounds, sv = [], True
+    pred_n=pred_ms=prompt_n=prompt_ms=0.0; wall=0.0
     for s in SEEDS:
         p = H.build_payload(H.load_doc(), prompt, H.BASELINE_SAMPLING, s)  # grammar = generic FACT_SCHEMA
-        content, _, _ = H.call_round(p)
+        content, t, w = H.call_round(p)
         facts, strict = H.parse_facts(content)
         if not strict: sv = False
         rounds.append(facts)
+        pred_n += t.get("predicted_n",0); pred_ms += t.get("predicted_ms",0.0)
+        prompt_n += t.get("prompt_n",0); prompt_ms += t.get("prompt_ms",0.0); wall += w
     uniq, total, dupes = H.dedup_unique(rounds)
     doc = H.load_doc()
     return {"unique": uniq, "n_unique": len(uniq), "total": total,
             "ground": round(H.groundedness(uniq, doc),3),
             "specificity": round(specificity(uniq),3),
             "pred_div": round(pred_diversity(uniq),3),
-            "schema_valid": sv}
+            "schema_valid": sv,
+            "decode_tps": round(pred_n/pred_ms*1000,2) if pred_ms else 0,
+            "predicted_tokens": int(pred_n),
+            "prompt_tokens": int(prompt_n/len(SEEDS)),
+            "prefill_tps": round(prompt_n/prompt_ms*1000,1) if prompt_ms else 0,
+            "wall_3rounds_s": round(wall,1)}
 
 if __name__ == "__main__":
     cfg = C.cfg("pe","pe", model=C.Q3_K_XL, **C.WIN)
@@ -110,7 +118,9 @@ if __name__ == "__main__":
         res[name] = run_arm(prompt)
         m = res[name]
         print(f"  n_unique={m['n_unique']} ground={m['ground']} spec={m['specificity']} "
-              f"pred_div={m['pred_div']} valid={m['schema_valid']}", flush=True)
+              f"pred_div={m['pred_div']} valid={m['schema_valid']} || "
+              f"decode_tps={m['decode_tps']} prompt_tok={m['prompt_tokens']} "
+              f"out_tok={m['predicted_tokens']} wall_3r={m['wall_3rounds_s']}s", flush=True)
     H.stop_server()
     # cross-coverage (does arm X recall arm Y's facts?)
     print("\n=== cross-coverage (row recalled-by col, info_text @0.80) ===")
