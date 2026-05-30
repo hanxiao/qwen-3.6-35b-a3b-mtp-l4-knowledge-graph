@@ -255,16 +255,23 @@ async def stream_single_extraction(
 
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
-                if not content:
+                # Reasoning models (LFM2.5) stream their chain-of-thought in
+                # 'reasoning_content', not 'content'. Count it toward tok/s so the
+                # meter moves during thinking, but don't feed it to the fact parser.
+                reasoning = delta.get("reasoning_content", "")
+                if not content and not reasoning:
                     continue
 
-                content_buf += content
                 token_count += 1
                 elapsed = time.time() - start_time
                 tps = token_count / elapsed if elapsed > 0 else 0
 
                 if token_count % 10 == 0:
-                    yield f"data: {json.dumps({'type': 'metrics', 'round': round_num, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1), 'prompt_tokens_est': prompt_tokens_est, 'system_tokens_est': system_tokens_est, 'doc_tokens_est': doc_tokens_est})}\n\n"
+                    yield f"data: {json.dumps({'type': 'metrics', 'round': round_num, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1), 'thinking': bool(reasoning and not content), 'prompt_tokens_est': prompt_tokens_est, 'system_tokens_est': system_tokens_est, 'doc_tokens_est': doc_tokens_est})}\n\n"
+
+                if not content:
+                    continue
+                content_buf += content
 
                 if token_count % 5 == 0:
                     new_facts = parse_facts_incremental(content_buf, parsed_hashes)
