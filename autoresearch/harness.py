@@ -179,6 +179,10 @@ def call_round(payload, timeout=600):
 
 def parse_facts(content):
     """Strict json_schema guarantees a valid object; fall back to regex if needed."""
+    # reasoning models (e.g. LFM2.5) prefix a <think>...</think> block even in
+    # nothink mode (empty tags); strip it so json.loads sees the object. No-op
+    # for Qwen nothink (no tags).
+    content = re.sub(r'^\s*<think>.*?</think>\s*', '', content, flags=re.DOTALL)
     try:
         obj = json.loads(content)
         if isinstance(obj, dict) and isinstance(obj.get("facts"), list):
