@@ -269,3 +269,30 @@ OG prompt is complex for a 1B-active model. But empty-triples is a capability
 gap, not a sampling artifact. Conclusion: LFM2.5-8B-A1B is not a viable swap for
 this structured KI task. (harness parse_facts now strips <think> for reasoning
 models.)
+
+## LFM2.5-8B-A1B — CORRECTED (read the model card; first run used wrong params)
+
+My first LFM run was unfair: I used Qwen's sampling (temp0.7, **presence_penalty 1.5**)
++ forced nothink. The model card recommends **temp 0.2, top_k 80, repetition_penalty
+1.05** and it's a reasoning model. presence_penalty 1.5 penalized the repeated
+schema-key tokens -> empty triples. Re-ran with recommended sampling (3 seeds):
+
+| arm (rec. sampling) | decode t/s | unique facts | coverage | groundedness | schema |
+|---|---|---|---|---|---|
+| nothink | 130.5 | 36 | 0.857 | 0.25 | some invalid |
+| thinking | 127.5 | 26 | **0.952** | 0.269 | some invalid |
+
+Corrected verdict:
+- The empty-triples collapse was the presence_penalty, NOT a capability gap. With
+  correct params LFM produces good, semantically-correct triples (release_date,
+  parameter_count, scores) and thinking-mode recalls **95% of the Qwen baseline KIs**.
+- Real remaining weakness: it **paraphrases evidence_span** instead of quoting
+  verbatim (groundedness ~0.26 vs Qwen ~0.52) -> fails a strict verbatim-evidence
+  requirement though the evidence content is correct. Plus occasional schema-invalid
+  rounds.
+- Speed: very high token rate (~130 t/s), but thinking generates ~5600 tok/round
+  (~45s) so end-to-end ≈ Qwen; nothink is genuinely faster but lower coverage (0.857).
+- Take: LFM2.5-8B-A1B (8B/1.5B-active, ~5GB) is a viable on-device extractor IF you
+  accept descriptive (non-verbatim) evidence. For strict verbatim-grounded KIs,
+  Qwen3.6-35B-A3B Q3 + MTP remains better. Lesson: always read the model card for
+  sampling/template before judging a swap.
