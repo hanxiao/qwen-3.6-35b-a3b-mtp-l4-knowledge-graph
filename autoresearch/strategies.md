@@ -296,3 +296,25 @@ Corrected verdict:
   accept descriptive (non-verbatim) evidence. For strict verbatim-grounded KIs,
   Qwen3.6-35B-A3B Q3 + MTP remains better. Lesson: always read the model card for
   sampling/template before judging a swap.
+
+## LFM2.5 grounding fix attempt (strengthen verbatim instruction) — BACKFIRED
+
+Tried lifting LFM's low groundedness by making the evidence_span instruction
+emphatic ("copy CHARACTER-FOR-CHARACTER, never paraphrase, OMIT the fact if no
+exact quote"). LFM-recommended sampling, vs the OG prompt:
+
+| arm | OG prompt | strengthened |
+|---|---|---|
+| thinking | 26 facts, ground 0.269, cov 0.952 | 11, ground 0.0, cov 0.667 |
+| nothink | 36 facts, ground 0.25, cov 0.857 | 44, ground 0.091, cov 0.905 |
+
+Strengthening made grounding WORSE (more EMPTY evidence_span) and cut thinking
+coverage. The 1.5B-active model cannot meet a hard verbatim-copy demand, so the
+stricter instruction makes it blank the field rather than quote -> its paraphrase/
+blank evidence behavior is intrinsic to model capacity, not promptable away.
+
+Final LFM2.5-8B-A1B take: viable small/on-device KI extractor with the OG prompt
++ recommended sampling IF descriptive (non-verbatim) evidence is acceptable
+(~0.26 grounding, up to ~0.95 coverage in thinking mode). For strict verbatim-
+grounded KIs, Qwen3.6-35B-A3B Q3 + MTP remains the choice. Prompt-engineering
+does not close the grounding gap.
