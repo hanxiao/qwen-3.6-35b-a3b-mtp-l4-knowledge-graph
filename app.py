@@ -164,7 +164,10 @@ def parse_facts_incremental(text: str, already_parsed: set) -> list:
                     if obj_hash not in already_parsed:
                         try:
                             fact = json.loads(obj_str)
-                            if "title" in fact and "subject" in fact:
+                            # require only title -> render partial facts too (some
+                            # models, e.g. LFM2.5 nothink, omit the triple/evidence
+                            # fields; the card renders whatever is present).
+                            if "title" in fact:
                                 already_parsed.add(obj_hash)
                                 new_facts.append(fact)
                         except json.JSONDecodeError:
