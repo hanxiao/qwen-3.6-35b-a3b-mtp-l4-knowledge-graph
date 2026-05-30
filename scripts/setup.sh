@@ -23,17 +23,15 @@ if ! dpkg -l | grep -q nvidia-container-toolkit; then
 fi
 
 echo "=== Downloading model ==="
-# Active: LFM2.5-8B-A1B (1B-active MoE), Q4_K_M (~5GB). Fast on-device extractor.
-# To use Qwen3.6-35B-A3B Q3 instead (higher quality / verbatim grounding), swap
-# the hf_hub_download below to unsloth/Qwen3.6-35B-A3B-MTP-GGUF :
-# Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf and update docker-compose.yml + app.py sampling.
+# Q3_K_XL (~3.5bpw): benchmarked at +34% decode vs Q4_K_XL with no quality loss
+# on the KI-extraction task (decode is memory-bandwidth bound; see autoresearch/).
 mkdir -p models
-if [ ! -f models/LFM2.5-8B-A1B-Q4_K_M.gguf ]; then
+if [ ! -f models/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf ]; then
     pip install -q huggingface-hub
     # use the Python API (the hf/huggingface-cli console script is often not on PATH)
     python3 -c "from huggingface_hub import hf_hub_download; \
-hf_hub_download('LiquidAI/LFM2.5-8B-A1B-GGUF', \
-'LFM2.5-8B-A1B-Q4_K_M.gguf', local_dir='models')"
+hf_hub_download('unsloth/Qwen3.6-35B-A3B-MTP-GGUF', \
+'Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf', local_dir='models')"
 else
     echo "Model already downloaded."
 fi

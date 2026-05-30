@@ -15,35 +15,23 @@ services:
               count: all
               capabilities: [gpu]
     restart: unless-stopped
-    # Active model: LiquidAI LFM2.5-8B-A1B (1B-active MoE), THINKING mode.
-    # Uses its own embedded chat template (no --chat-template-file). Thinking is
-    # CAPPED thinking via --reasoning-budget 2048: the model reasons (which is
-    # what populates the full fact triple + evidence) but stops in time to emit
-    # the JSON. Without a cap, LFM's reasoning on a long doc fills the entire
-    # token budget and never produces the answer (-> no facts). With 0 (nothink)
-    # it skips reasoning and leaves the triple/evidence fields empty. 2048 is the
-    # sweet spot: full-field facts, ~24s/round. No MTP head -> no spec-decode
-    # flags; uses the model's own embedded chat template. App sampling: LFM-tuned.
     command: >
-      --model /models/LFM2.5-8B-A1B-Q4_K_M.gguf
+      --model /models/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf
       --host 0.0.0.0
       --port 8080
       --ctx-size 16384
       --parallel 1
       --flash-attn 1
+      --no-mmap
       --threads 8
-      --n-gpu-layers 999
+      --spec-type draft-mtp
+      --spec-draft-n-max 3
+      --spec-draft-p-min 0.1
       --n-predict 8192
       --jinja
+      --chat-template-file /templates/chat_template.jinja
+      -fitt 512
       --cache-reuse 256
-      --reasoning-budget 2048
-    # --- To revert to Qwen3.6-35B-A3B Q3 + MTP (higher quality, verbatim
-    # --- grounding; also set app.py sampling back to temp0.7/presence_penalty1.5):
-    #   --model /models/Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf
-    #   --host 0.0.0.0 --port 8080 --ctx-size 16384 --parallel 1 --flash-attn 1
-    #   --no-mmap --threads 8 --spec-type draft-mtp --spec-draft-n-max 3
-    #   --spec-draft-p-min 0.1 --n-predict 8192 --jinja
-    #   --chat-template-file /templates/chat_template.jinja -fitt 512 --cache-reuse 256
 
   ki-extractor:
     build: .

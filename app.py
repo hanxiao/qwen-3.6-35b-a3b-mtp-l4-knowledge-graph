@@ -164,10 +164,7 @@ def parse_facts_incremental(text: str, already_parsed: set) -> list:
                     if obj_hash not in already_parsed:
                         try:
                             fact = json.loads(obj_str)
-                            # require only title -> render partial facts too (some
-                            # models, e.g. LFM2.5 nothink, omit the triple/evidence
-                            # fields; the card renders whatever is present).
-                            if "title" in fact:
+                            if "title" in fact and "subject" in fact:
                                 already_parsed.add(obj_hash)
                                 new_facts.append(fact)
                         except json.JSONDecodeError:
@@ -211,20 +208,18 @@ async def stream_single_extraction(
     doc_tokens_est = len(body_text) // 4
 
     payload = {
-        "model": "lfm2.5",
+        "model": "qwen3.6",
         "messages": [{"role": "user", "content": full_prompt}],
         "max_tokens": 8192,
         "stream": True,
         "seed": seed,
-        # LFM2.5-8B-A1B recommended sampling (temp 0.2 / top_k 80 / repetition 1.05).
-        # NOTE: no presence_penalty -- it penalizes the repeated JSON schema-key
-        # tokens and makes LFM emit empty fields. nothink is set server-side via
-        # --reasoning-budget 0 (see docker-compose.yml).
-        # (Qwen3.6 used: temperature 0.7, top_p 0.8, top_k 20, presence_penalty 1.5.)
-        "temperature": 0.2,
-        "top_k": 80,
-        "repeat_penalty": 1.05,
+        "temperature": 0.7,
+        "top_p": 0.8,
+        "top_k": 20,
+        "min_p": 0.0,
+        "presence_penalty": 1.5,
         "response_format": {"type": "json_schema", "json_schema": {"name": "ki_facts", "strict": True, "schema": FACT_SCHEMA}},
+        "chat_template_kwargs": {"enable_thinking": False},
     }
 
     yield f"data: {json.dumps({'type': 'round_start', 'round': round_num, 'seed': seed, 'prompt_tokens_est': prompt_tokens_est, 'system_tokens_est': system_tokens_est, 'doc_tokens_est': doc_tokens_est})}\n\n"
@@ -255,23 +250,16 @@ async def stream_single_extraction(
 
                 delta = chunk.get("choices", [{}])[0].get("delta", {})
                 content = delta.get("content", "")
-                # Reasoning models (LFM2.5) stream their chain-of-thought in
-                # 'reasoning_content', not 'content'. Count it toward tok/s so the
-                # meter moves during thinking, but don't feed it to the fact parser.
-                reasoning = delta.get("reasoning_content", "")
-                if not content and not reasoning:
+                if not content:
                     continue
 
+                content_buf += content
                 token_count += 1
                 elapsed = time.time() - start_time
                 tps = token_count / elapsed if elapsed > 0 else 0
 
                 if token_count % 10 == 0:
-                    yield f"data: {json.dumps({'type': 'metrics', 'round': round_num, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1), 'thinking': bool(reasoning and not content), 'prompt_tokens_est': prompt_tokens_est, 'system_tokens_est': system_tokens_est, 'doc_tokens_est': doc_tokens_est})}\n\n"
-
-                if not content:
-                    continue
-                content_buf += content
+                    yield f"data: {json.dumps({'type': 'metrics', 'round': round_num, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1), 'prompt_tokens_est': prompt_tokens_est, 'system_tokens_est': system_tokens_est, 'doc_tokens_est': doc_tokens_est})}\n\n"
 
                 if token_count % 5 == 0:
                     new_facts = parse_facts_incremental(content_buf, parsed_hashes)
@@ -576,7 +564,7 @@ input[type="range"]::-webkit-slider-thumb{-webkit-appearance:none;width:14px;hei
 <nav>
   <div class="logo">KI Extractor</div>
   <span class="sep">|</span>
-  <span class="tag">LFM2.5-8B-A1B (thinking) &middot; NVIDIA L4 24GB</span>
+  <span class="tag">Qwen3.6-35B-A3B-MTP &middot; NVIDIA L4 24GB</span>
 </nav>
 
 <div class="layout">

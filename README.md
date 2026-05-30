@@ -17,16 +17,12 @@ Inspired by the [Knowledge Indicators concept from Elastic](https://www.elastic.
 
 | Component | What | Port |
 |-----------|------|------|
-| **llama-server** | [llama.cpp](https://github.com/ggml-org/llama.cpp) with CUDA, serves LFM2.5-8B-A1B (default) or Qwen3.6-35B-A3B via OpenAI-compatible API | 8080 |
+| **llama-server** | [llama.cpp](https://github.com/ggml-org/llama.cpp) with CUDA, serves Qwen3.6-35B-A3B via OpenAI-compatible API | 8080 |
 | **ki-extractor** | FastAPI app with extraction UI + jina-v5-nano dedup on CPU | 3000 |
 
 ## Hardware
 
-Single NVIDIA L4 24GB GPU (e.g. GCP `g2-standard-8`).
-
-**Active model: `LiquidAI/LFM2.5-8B-A1B` (Q4_K_M, thinking)** — a 1B-active MoE, ~5GB. Thinking is ON: the model reasons before emitting JSON, which is what makes it populate the full fact triple + evidence (in nothink mode it leaves subject/predicate/object/evidence empty — title+description only). Cost: ~5-7k reasoning tokens/round → ~45-60s/round (vs ~10s nothink). Decode is fast (~130 tok/s); cards appear after the reasoning completes. Sampling is LFM-tuned (temp 0.2 / top_k 80 / repetition 1.05). Note: it still **paraphrases evidence** rather than quoting verbatim (lower grounding than Qwen). For nothink (fast, title+desc only) drop the reasoning flag — but it won't produce full KIs.
-
-**Alternative: `Qwen3.6-35B-A3B` Q3_K_XL + MTP** — slower (~76 tok/s) but higher quality with verbatim-grounded evidence; +34% over Q4 from the optimization work in [`autoresearch/`](autoresearch/REPORT.md). To switch, see the commented config in `docker-compose.yml` + `scripts/setup.sh` (the Configuration/Key-findings sections below describe this model).
+Single NVIDIA L4 24GB GPU (e.g. GCP `g2-standard-8`). The model runs in **Q3_K_XL** quantization with MTP (Multi-Token Prediction) speculative decoding — benchmarked at ~76 tok/s decode, +34% over Q4_K_XL with no quality loss on this task (see [`autoresearch/`](autoresearch/REPORT.md)).
 
 ## Quick start
 
@@ -42,7 +38,7 @@ cp .env.example .env
 bash scripts/setup.sh
 ```
 
-This downloads the model (~5GB for LFM2.5), pulls Docker images, and starts both services.
+This downloads the model (~17GB), pulls Docker images, and starts both services.
 
 Once running, open `http://<your-ip>:3000`.
 
@@ -51,21 +47,19 @@ Once running, open `http://<your-ip>:3000`.
 If you already have Docker + NVIDIA Container Toolkit:
 
 ```bash
-# Download model (~5GB). Uses the Python API; the hf/huggingface-cli console
+# Download model (~17GB). Uses the Python API; the hf/huggingface-cli console
 # script is often not on PATH after a pip --user install.
 mkdir -p models
 pip install -q huggingface-hub
 python3 -c "from huggingface_hub import hf_hub_download; \
-hf_hub_download('LiquidAI/LFM2.5-8B-A1B-GGUF', \
-'LFM2.5-8B-A1B-Q4_K_M.gguf', local_dir='models')"
+hf_hub_download('unsloth/Qwen3.6-35B-A3B-MTP-GGUF', \
+'Qwen3.6-35B-A3B-UD-Q3_K_XL.gguf', local_dir='models')"
 
 # Start
 docker compose up -d --build
 ```
 
 ## Configuration
-
-> The flags below are for the **Qwen3.6-35B-A3B** alternative (MTP speculative decoding). The active LFM2.5 config is simpler — no MTP/spec flags, thinking on, the model's own chat template — see `docker-compose.yml`.
 
 ### llama-server flags (in `docker-compose.yml`)
 
@@ -129,7 +123,7 @@ Headline numbers (decode tok/s, fixed-seed, on the v5-omni article):
 ├── scripts/
 │   └── setup.sh            # One-shot GCP L4 setup
 ├── autoresearch/           # Throughput optimization dataroom (harness, experiments, REPORT.md)
-├── models/                 # Model files (gitignored, ~5GB LFM / ~17GB Qwen)
+├── models/                 # Model files (gitignored, ~17GB)
 └── assets/
     └── demo.gif
 ```
