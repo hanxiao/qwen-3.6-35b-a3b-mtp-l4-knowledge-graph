@@ -7,6 +7,8 @@ RUN pip install --no-cache-dir \
     uvicorn \
     httpx \
     numpy \
+    python-multipart \
+    pypdf \
     sentence-transformers \
     peft \
     einops \
