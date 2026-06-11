@@ -690,6 +690,30 @@ async def api_job_events(job_id: str):
     return StreamingResponse(gen(), media_type="text/event-stream")
 
 
+DEFAULT_ZIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jina-corpus.zip")
+DEFAULT_ZIP_NAME = "jina-corpus.zip"
+
+@app.get("/api/default-prompt")
+async def get_default_prompt():
+    return {"prompt": DEFAULT_PROMPT}
+
+@app.get("/api/default-zip-info")
+async def default_zip_info():
+    if not os.path.exists(DEFAULT_ZIP_PATH):
+        return {"available": False}
+    try:
+        with zipfile.ZipFile(DEFAULT_ZIP_PATH) as zf:
+            n = sum(1 for i in zf.infolist() if not i.is_dir())
+    except Exception:
+        n = 0
+    return {"available": True, "name": DEFAULT_ZIP_NAME, "files": n,
+            "size_mb": round(os.path.getsize(DEFAULT_ZIP_PATH) / 1024 / 1024, 1)}
+
+@app.get("/api/default-zip")
+async def default_zip():
+    if not os.path.exists(DEFAULT_ZIP_PATH):
+        return {"available": False}
+    return FileResponse(DEFAULT_ZIP_PATH, media_type="application/zip", filename=DEFAULT_ZIP_NAME)
 
 
 @app.get("/", response_class=HTMLResponse)
