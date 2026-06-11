@@ -62,62 +62,75 @@ def check_duplicate(new_emb: np.ndarray, existing_embs: list, existing_indices: 
     return max_sim >= threshold, max_sim, dup_of
 
 
-DEFAULT_PROMPT = """Return a JSON object with key "facts" containing 0-15 atomic facts.
-Long, fact-dense documents (Wikipedia articles, news features, profiles,
-academic-staff pages) typically warrant 8-15 facts. Short or generic
-documents may warrant 0-3.
-Each fact MUST be self-contained: title + description together fully answer
-the implied W-question (who/what/when/where/how/which) without requiring the
-source document. A future agent should be able to commit to an answer by
-reading just title+description -- the description must include the answer
-value, supporting evidence (date, location, named witness, exact quantity,
-physical detail), and a short verbatim quote (<=30 words) when it adds
-disambiguating signal. This bias toward density is intentional even at the
-cost of slightly longer descriptions.
+DEFAULT_PROMPT = """Extract a knowledge graph from the document. Return a JSON object with key
+"facts" containing 0-15 atomic relationship facts. Each fact is ONE edge:
+a (subject) --[predicate]--> (object) triple plus human-readable context.
+Long, dense documents (articles, papers, profiles) typically warrant 8-15
+facts; short or generic pages 0-3.
+
+The single most important rule -- THIS DRIVES GRAPH CONNECTIVITY:
+subject and object MUST be canonical ENTITIES or short atomic VALUES, never
+prose. They are graph nodes: the same entity must come out identical every
+time so edges connect. Put narrative, evidence and nuance in the description,
+NOT in subject/object.
+
+subject / object rules:
+- Use the shortest canonical name of a real entity: a person, organisation,
+ product/model, dataset, method, paper, place, technology, or a concrete
+ atomic value (a date, a number+unit, a version, a metric score).
+- Strip articles, roles, and qualifiers: "the Jina AI team" -> "Jina AI";
+ "a model called jina-embeddings-v3" -> "jina-embeddings-v3".
+- Use the canonical surface form, not a pronoun or paraphrase. Reuse the exact
+ same string for the same entity across every fact (this is how nodes merge).
+- Never put a sentence or clause in subject/object. If the value is inherently
+ descriptive (e.g. "trained on 2B multilingual tokens"), make object the
+ atomic value ("2B multilingual tokens") and explain in description.
+- Prefer relationships that link TWO named entities (entity-entity edges) --
+ these are what make the graph rich. Entity-value edges are fine too.
+
 Each fact:
  {
- "title": "<one natural sentence <=140 chars stating the fact, ending with the answer value when possible (e.g. 'Townsend was last seen wearing a red shirt.')>",
- "description": "<2-3 sentences <=350 chars carrying the answer + evidence: entity, relation, value, date/location/source detail, and an inline verbatim quote when it disambiguates. Avoid restating the title verbatim.>",
- "subject": "<canonical entity name>",
+ "title": "<one natural sentence <=140 chars stating the fact, ending with the value when possible>",
+ "description": "<2-3 sentences <=350 chars carrying the answer + evidence: entities, relation, value, date/number/source detail, and an inline verbatim quote when it disambiguates. Avoid restating the title verbatim.>",
+ "subject": "<canonical entity name, short>",
  "predicate": "<precise snake_case relation, <=32 chars>",
- "object": "<the value of the fact, plain prose>",
+ "object": "<canonical entity name OR short atomic value>",
  "evidence_span": "<verbatim 1-3 sentence quote, substring of the doc text above>",
  "confidence": <0..100 integer>,
  "tags": ["<entity/topic/year tags, lowercase, alphanumeric+hyphen>", ...]
  }
-Coverage priorities -- extract a fact for EACH of the following whenever it's grounded in the doc text:
-- Every named person mentioned + their role / position / title (no matter how briefly named --
- a one-line mention of "the secretary, Mary" still warrants its own fact).
-- Every named organisation + its relation to the main entity.
-- Every concrete date + the event that occurred on it (graduation 22 June 2003, trip 1 Nov 2022, etc.).
-- Every named location + what happened there.
-- Every distinctive descriptive detail: clothing colour, building material, exact age, weight,
- height, vehicle, distinguishing feature, last-seen description.
-- Every cross-entity relationship: X collaborated with Y, X worked for Y, X spoke at Y's
- conference, X's child is Z, X co-edited a book with Y.
+Coverage priorities -- extract a fact for EACH of the following when grounded in the text:
+- Every named person + their role / position / affiliation (even if named once).
+- Every named organisation, product, model, dataset, or method + how it relates
+ to other named entities (built_by, based_on, trained_on, outperforms, part_of).
+- Every concrete date/version + the event or release it marks.
+- Every named place + what happened or is located there.
+- Every quantitative result: metric scores, sizes, token counts, speedups,
+ prices -- as entity --[has_metric/scored]--> value edges.
+- Every cross-entity relationship: X built Y, X based on Y, X collaborated with
+ Y, X acquired Y, X cites Y, X compared against Y.
 Anti-patterns -- do NOT do these:
-- Don't only extract facts about the most famous / dominant entity in the doc. Secondary
- individuals named once still warrant their own fact.
-- Don't fill the budget with generic claims (founded-year, location, leadership) at the
- expense of specific concrete details that sit deeper in the doc body.
-- Don't skip a fact because it seems minor -- minor facts are often what disambiguate two
- similar entities at retrieval time.
+- Don't put descriptive sentences into subject or object. That creates dead-end
+ nodes that never connect. Keep nodes short and canonical.
+- Don't only extract facts about the dominant entity. Secondary entities named
+ once still warrant their own edge.
+- Don't fill the budget with generic boilerplate (tagline, copyright, nav) at
+ the expense of specific, connectable relationships deeper in the body.
 Predicate guidance:
-- Use a precise snake_case predicate (<=32 chars). Prefer reusing common terms when they fit:
- located_in, founded_in, founded_by, held_event, published_article, won_award, member_of,
- position_held, born_in, died_in, created_by, parent_of, succeeded_by, field_of_study,
- co_authored_with, organized_by, attended_by, physical_description, last_seen_wearing,
- clothing_worn, cross_link.
-- Coin a new specific predicate when none of those fit. AVOID the catch-all affiliated_with.
+- Use a precise snake_case predicate (<=32 chars). Reuse common terms when they fit:
+ built_by, created_by, based_on, trained_on, fine_tuned_from, part_of,
+ developed_at, founded_by, founded_in, located_in, released_on, version_of,
+ outperforms, compared_with, evaluated_on, scored, has_metric, supports,
+ integrates_with, acquired_by, authored_by, cites, member_of, position_held,
+ successor_of, used_for.
+- Coin a new specific predicate when none fit. AVOID the catch-all affiliated_with.
 Title and description constraints (CRITICAL -- items violating these are dropped):
 - title and description MUST read as natural standalone fact statements.
-- They MUST NOT contain the strings: "BrowseComp", "qid", "qid:",
- "use this fact", "anchor a criterion", "without re-reading".
 - They MUST NOT mention the document, the dataset, or this task.
 Fact constraints:
-- Favor specificity (proper nouns, dates, numbers) over generic claims.
-- Skip the doc entirely (return empty facts list) for navigation pages, login walls,
- error pages, very short or generic content.
+- Favor specificity (proper nouns, versions, numbers) over generic claims.
+- Skip the doc entirely (return empty facts list) for navigation pages, login
+ walls, error pages, very short or generic content.
 - evidence_span must be a verbatim substring of the doc text supplied above.
 
 Output ONLY the JSON object."""
