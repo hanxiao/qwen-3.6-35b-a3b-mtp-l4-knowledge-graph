@@ -880,7 +880,7 @@ function initGraph(){
   Graph=ForceGraph()(el)
     .width(el.clientWidth).height(el.clientHeight)
     .backgroundColor('#ffffff')
-    .nodeLabel(n=>n.id)
+    .nodeLabel(n=>n.label||n.id)
     .nodeVal(n=>Math.min(10,1.5+n.deg))
     .nodeColor(()=> '#1a1a1a')
     .nodeRelSize(4)
@@ -894,7 +894,8 @@ function initGraph(){
     .nodeCanvasObject((n,ctx,scale)=>{
       const r=Math.min(10,1.5+n.deg)/scale;
       if(scale>1.0){
-        const label=n.id.length>30?n.id.slice(0,29)+'…':n.id;
+        const disp=n.label||n.id;
+        const label=disp.length>30?disp.slice(0,29)+'…':disp;
         ctx.font=`${Math.max(2.5,10/scale)}px 'SF Mono',monospace`;
         ctx.fillStyle='#1a1a1a';ctx.textAlign='center';ctx.textBaseline='top';
         ctx.fillText(label,n.x,n.y+r+1.5/scale);
@@ -934,14 +935,23 @@ function refreshGraph(){
   _fitPending=setTimeout(()=>zoomFit(),250);
 }
 
+// Normalize entity names so case/whitespace/punctuation variants map to one node.
+function normKey(s){
+  return (s||'').toLowerCase()
+    .normalize('NFKC')
+    .replace(/[\s\u00a0]+/g,' ')      // collapse whitespace
+    .replace(/^[\s"'`([{]+|[\s"'`)\]}.,;:!?]+$/g,'') // strip wrapping/trailing punct
+    .trim();
+}
 function addFactEdge(fact){
-  const s=(fact.subject||'').trim()||'?';
-  const o=(fact.object||'').trim()||'?';
-  for(const id of [s,o]){
-    if(!graphNodes.has(id)) graphNodes.set(id,{id,deg:0});
-    graphNodes.get(id).deg++;
+  const sRaw=(fact.subject||'').trim()||'?';
+  const oRaw=(fact.object||'').trim()||'?';
+  const sKey=normKey(sRaw)||'?', oKey=normKey(oRaw)||'?';
+  for(const [key,raw] of [[sKey,sRaw],[oKey,oRaw]]){
+    if(!graphNodes.has(key)) graphNodes.set(key,{id:key,label:raw,deg:0});
+    graphNodes.get(key).deg++;
   }
-  graphLinks.push({source:s,target:o,fact});
+  graphLinks.push({source:sKey,target:oKey,fact});
 }
 
 function showHover(link){
