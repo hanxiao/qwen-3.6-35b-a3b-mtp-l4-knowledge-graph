@@ -900,10 +900,23 @@ function initGraph(){
         ctx.fillText(label,n.x,n.y+r+1.5/scale);
       }
     })
-    .cooldownTicks(80)
+    .cooldownTicks(90)
     .onEngineStop(()=>zoomFit())
     .onLinkHover(link=>{ showHover(link); })
     .onNodeHover(n=>{ if(!n) hideHover(); });
+  // Tame the physics so many small/disconnected clusters stay compact.
+  // Default charge has no distance cap -> separate components fly apart ->
+  // zoomToFit then shrinks the whole graph to fit them. Cap charge range and
+  // add a mild centering pull so isolated edges don't drift to infinity.
+  try{ Graph.d3Force('charge').strength(-20).distanceMax(60); }catch(e){}
+  try{ Graph.d3Force('link').distance(24).strength(1); }catch(e){}
+  const centerForce=(function(){
+    let nodes=[];
+    function f(alpha){ const k=alpha*0.08; for(const n of nodes){ n.vx-=n.x*k; n.vy-=n.y*k; } }
+    f.initialize=n=>{ nodes=n; };
+    return f;
+  })();
+  try{ Graph.d3Force('center2', centerForce); }catch(e){}
   // hide hover when leaving canvas
   el.addEventListener('mouseleave',hideHover);
   el.addEventListener('mousemove',e=>{ window._mx=e.clientX; window._my=e.clientY; positionHover(); });
