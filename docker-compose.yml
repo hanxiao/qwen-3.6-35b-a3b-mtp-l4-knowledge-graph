@@ -44,6 +44,9 @@ services:
       - LLAMA_URL=http://llama-server:8080
       - CUDA_VISIBLE_DEVICES=
       - TOKENIZERS_PARALLELISM=false
+      - JOBS_DIR=/data/jobs
+    volumes:
+      - ./data:/data
     depends_on:
       - llama-server
     restart: unless-stopped

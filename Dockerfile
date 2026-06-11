@@ -15,6 +15,7 @@ RUN pip install --no-cache-dir \
     torch --extra-index-url https://download.pytorch.org/whl/cpu
 
 COPY app.py .
+COPY jobs.py .
 COPY jina-corpus.zip .
 
 EXPOSE 3000

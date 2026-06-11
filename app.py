@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """KI Extractor - Knowledge Indicator extraction via Qwen3.6 MTP + jina-v5-nano dedup."""
 
-import json, time, hashlib, re, random, os, io, zipfile, tempfile, shutil, numpy as np
+import json, time, hashlib, re, random, os, io, zipfile, tempfile, shutil, asyncio, numpy as np
 from typing import AsyncGenerator
 from fastapi import FastAPI, Request, UploadFile, File, Form
 from fastapi.responses import HTMLResponse, StreamingResponse, FileResponse
@@ -382,89 +382,229 @@ async def stream_single_extraction(
     yield f"data: {json.dumps({'type': 'round_end', 'round': round_num, 'round_facts': round_facts, 'round_dupes': round_dupes, 'tokens': token_count, 'elapsed': round(elapsed, 1), 'tps': round(tps, 1), 'note': cached_note})}\n\n"
 
 
-@app.post("/api/extract")
-async def extract(request: Request):
-    body = await request.json()
-    url = body.get("url", "").strip()
-    text = body.get("text", "").strip()
-    k_rounds = max(1, min(10, int(body.get("k", 1))))
-    extraction_prompt = body.get("prompt", DEFAULT_PROMPT).strip()
-    dedup_threshold = float(body.get("dedup_threshold", 0.90))
-    dedup_field = body.get("dedup_field", "triple")
-    dedup_enabled = bool(body.get("dedup_model", "v5-nano"))
+import jobs as J
 
-    async def event_stream():
-        global _active_extractions, _queue_counter, _done_counter
-        _queue_counter += 1
-        my_pos = _queue_counter
-        _active_extractions += 1
-        try:
-            if url:
-                yield f"data: {json.dumps({'type': 'status', 'message': 'Fetching via Jina Reader...'})}\n\n"
-                fetched_text, title, truncated = await fetch_url(url)
-                yield f"data: {json.dumps({'type': 'fetched', 'title': title, 'chars': len(fetched_text), 'truncated': truncated})}\n\n"
-                doc_text = fetched_text
-            elif text:
-                truncated = len(text) > MAX_INPUT_CHARS
-                doc_text = text[:MAX_INPUT_CHARS] if truncated else text
-                title = "Pasted text"
-                yield f"data: {json.dumps({'type': 'fetched', 'title': title, 'chars': len(doc_text), 'truncated': truncated})}\n\n"
-            else:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'No URL or text provided'})}\n\n"
+# ---------- job runner: does the actual extraction for one job, cooperatively ----------
+async def run_job(job_id: str):
+    """Run (or resume) one extraction job. Emits SSE-style events via J._emit and
+    appends each fact to facts.jsonl. Honors cooperative pause at file/round edges:
+    on pause it persists progress and returns without marking done."""
+    meta = J._jobs.get(job_id, {})
+    k_rounds = max(1, min(10, int(meta.get("k", 1))))
+    extraction_prompt = (meta.get("prompt") or DEFAULT_PROMPT).strip()
+    dedup_threshold = float(meta.get("dedup_threshold", 0.90))
+    dedup_field = meta.get("dedup_field", "triple")
+    dedup_enabled = bool(meta.get("dedup_model"))
+    d = J.job_dir(job_id)
+
+    def emit(ev):
+        J._emit(job_id, ev)
+
+    # ---- rebuild dedup state + counters from prior facts.jsonl (resume) ----
+    existing_embs: list = []
+    existing_indices: list = []
+    total_facts = int(meta.get("total_facts", 0))
+    total_dupes = int(meta.get("duplicate_facts", 0))
+    done_files = set(meta.get("done_files", []))
+    prior_lines = []
+    jp = J.jsonl_path(job_id)
+    if jp.exists() and total_facts:
+        for line in jp.read_text().splitlines():
+            if not line.strip():
+                continue
+            try:
+                rec = json.loads(line)
+            except Exception:
+                continue
+            prior_lines.append(rec)
+            if dedup_enabled and not rec.get("is_duplicate"):
+                emb = embed_fact(rec, dedup_field)
+                existing_embs.append(emb)
+                existing_indices.append(len(existing_indices) + 1)
+
+    jsonl_fh = open(jp, "a", encoding="utf-8")
+
+    def persist_progress(status):
+        meta["total_facts"] = total_facts
+        meta["duplicate_facts"] = total_dupes
+        meta["unique_facts"] = total_facts - total_dupes
+        meta["done_files"] = sorted(done_files)
+        meta["files_done"] = len(done_files)
+        # 'keep' = persist counters only, don't touch status (scheduler owns it on pause).
+        # Also never clobber a pause/stop requested mid-run with 'running'.
+        if status == "keep":
+            pass
+        elif status == "running" and (paused_requested() or meta.get("status") in ("pausing", "held", "paused")):
+            pass
+        else:
+            meta["status"] = status
+        J._jobs[job_id] = meta
+        J.save_meta(job_id)
+
+    def paused_requested():
+        return J.is_paused_requested(job_id)
+
+    try:
+        # replay prior facts to any (re)connected viewer so the graph rebuilds
+        if prior_lines:
+            emit({"type": "replay", "facts": prior_lines})
+
+        # ---- build the work item list (zip files, or single url/text) ----
+        if meta.get("source_kind") == "zip":
+            tmpdir = tempfile.mkdtemp(prefix="kizip_")
+            extract_dir = os.path.join(tmpdir, "ex"); os.makedirs(extract_dir, exist_ok=True)
+            try:
+                files = list_zip_files(str(d / "input.zip"), extract_dir)
+            except Exception:
+                files = []
+            if not files:
+                emit({"type": "error", "message": "No supported text files in zip"})
+                persist_progress("failed"); meta["finished"] = time.time(); J.save_meta(job_id)
+                jsonl_fh.close(); shutil.rmtree(tmpdir, ignore_errors=True)
                 return
+            meta["num_files"] = len(files)
+            emit({"type": "filelist", "files": [f["name"] for f in files], "done_files": sorted(done_files)})
+            work = [(f["name"], read_file_text(f["path"], f["name"])) for f in files]
+            cleanup = lambda: shutil.rmtree(tmpdir, ignore_errors=True)
+        else:
+            payload = json.loads((d / "input.json").read_text())
+            url = (payload.get("url") or "").strip()
+            text = (payload.get("text") or "").strip()
+            if url:
+                emit({"type": "status", "message": "Fetching via Jina Reader..."})
+                doc_text, title, truncated = await fetch_url(url)
+                emit({"type": "fetched", "title": title, "chars": len(doc_text), "truncated": truncated})
+            else:
+                doc_text = text[:MAX_INPUT_CHARS]
+                emit({"type": "fetched", "title": "Pasted text", "chars": len(doc_text), "truncated": len(text) > MAX_INPUT_CHARS})
+            meta["num_files"] = 1
+            work = [(url or "pasted", doc_text)]
+            cleanup = lambda: None
 
+        # ---- iterate work items, skipping already-done ones (resume) ----
+        for fi, (fname, doc_text) in enumerate(work):
+            if fname in done_files:
+                continue
+            if paused_requested():
+                persist_progress("keep"); cleanup(); jsonl_fh.close(); return  # scheduler finalizes state
+            emit({"type": "file_start", "file_index": fi, "file": fname})
+            if not (doc_text or "").strip():
+                done_files.add(fname)
+                emit({"type": "file_end", "file_index": fi, "file": fname, "file_facts": 0, "skipped": True})
+                persist_progress("running")
+                continue
             docid = hashlib.md5(doc_text[:500].encode()).hexdigest()[:8]
-            existing_embs: list = []
-            existing_indices: list = []
-            total_facts = 0
-            total_dupes = 0
-            total_tokens = 0
-            total_start = time.time()
-            all_facts_list = []
-
+            doc_text = doc_text[:MAX_INPUT_CHARS]
+            file_facts = 0
             for r in range(1, k_rounds + 1):
                 seed = random.randint(1, 999999)
                 async for event in stream_single_extraction(
-                    doc_text, extraction_prompt, url, docid,
-                    round_num=r, seed=seed,
-                    fact_offset=total_facts,
-                    existing_embs=existing_embs,
-                    existing_indices=existing_indices,
+                    doc_text, extraction_prompt, fname if meta.get("source_kind") != "zip" else "",
+                    docid, round_num=r, seed=seed, fact_offset=total_facts,
+                    existing_embs=existing_embs, existing_indices=existing_indices,
                     dedup_threshold=dedup_threshold, dedup_field=dedup_field,
                     dedup_enabled=dedup_enabled,
+                    source_file=fname if meta.get("source_kind") == "zip" else "",
                 ):
-                    yield event
-                    if event.startswith("data: "):
-                        try:
-                            d = json.loads(event[6:])
-                            if d.get("type") == "round_end":
-                                total_facts += d["round_facts"]
-                                total_dupes += d["round_dupes"]
-                                total_tokens += d["tokens"]
-                            elif d.get("type") == "fact":
-                                all_facts_list.append({**d["fact"], "_is_duplicate": d["is_duplicate"], "_max_similarity": d["max_similarity"]})
-                        except:
-                            pass
+                    if not event.startswith("data: "):
+                        continue
+                    try:
+                        ev = json.loads(event[6:])
+                    except Exception:
+                        continue
+                    if ev.get("type") == "fact":
+                        rec = {**ev["fact"], "is_duplicate": ev["is_duplicate"]}
+                        jsonl_fh.write(json.dumps(rec, ensure_ascii=False) + "\n")
+                        jsonl_fh.flush()
+                        emit({"type": "fact", "fact": rec, "is_duplicate": ev["is_duplicate"], "tps": ev.get("tps", 0)})
+                    elif ev.get("type") == "round_end":
+                        total_facts += ev["round_facts"]
+                        total_dupes += ev["round_dupes"]
+                        file_facts += ev["round_facts"]
+                    elif ev.get("type") in ("metrics", "round_start"):
+                        emit(ev)
+            done_files.add(fname)
+            emit({"type": "file_end", "file_index": fi, "file": fname, "file_facts": file_facts})
+            persist_progress("running")
+            if paused_requested():
+                persist_progress("keep"); cleanup(); jsonl_fh.close(); return
 
-            total_elapsed = time.time() - total_start
-            overall_tps = total_tokens / total_elapsed if total_elapsed > 0 else 0
-            unique_facts = total_facts - total_dupes
-            unique_list = [f for f in all_facts_list if not f.get("_is_duplicate")]
-            clean_list = [{k: v for k, v in f.items() if not k.startswith("_")} for f in unique_list]
-            yield f"data: {json.dumps({'type': 'done', 'k_rounds': k_rounds, 'total_facts': total_facts, 'unique_facts': unique_facts, 'duplicate_facts': total_dupes, 'total_tokens': total_tokens, 'elapsed': round(total_elapsed, 1), 'tps': round(overall_tps, 1), 'raw_json': {'facts': clean_list}})}\n\n"
+        # ---- finished all work ----
+        cleanup()
+        jsonl_fh.close()
+        persist_progress("done")
+        meta["finished"] = time.time()
+        J.save_meta(job_id)
+        emit({"type": "done", "unique_facts": total_facts - total_dupes,
+              "total_facts": total_facts, "duplicate_facts": total_dupes,
+              "num_files": meta.get("num_files")})
+    except Exception as e:
+        import traceback; traceback.print_exc()
+        try: jsonl_fh.close()
+        except Exception: pass
+        meta["error"] = str(e)[:300]; persist_progress("failed")
+        meta["finished"] = time.time(); J.save_meta(job_id)
+        emit({"type": "error", "message": str(e)})
 
+
+async def _worker():
+    while True:
+        async with J._cond:
+            job_id, backfill = J._select_next()
+            if job_id is None:
+                await J._cond.wait()
+                continue
+            J._jobs[job_id]["status"] = "running"
+            J._jobs[job_id]["auto"] = backfill
+            J._current["job_id"] = job_id
+            J._pause_flags.pop(job_id, None)
+            J.save_meta(job_id)
+        # run outside the lock
+        try:
+            await run_job(job_id)
         except Exception as e:
             import traceback; traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
-        finally:
-            _active_extractions -= 1
-            _done_counter += 1
+            J._jobs.get(job_id, {})["status"] = "failed"
+            J.save_meta(job_id)
+        async with J._cond:
+            J._current["job_id"] = None
+            m = J._jobs.get(job_id, {})
+            # If run_job returned while a pause/preempt was pending (or status not terminal),
+            # finalize: user pause -> sticky 'held', system preempt -> backfillable 'paused'.
+            pause_pending = J._pause_flags.pop(job_id, False)
+            if m.get("status") not in ("done", "failed"):
+                if m.get("status") == "pausing" or pause_pending:
+                    m["status"] = "held" if J._user_held.get(job_id) else "paused"
+                    J.save_meta(job_id)
+            J._user_held.pop(job_id, None)
+            # purge a job deleted while running
+            if job_id in J._jobs_pending_delete:
+                J._jobs.pop(job_id, None)
+                J._jobs_pending_delete.discard(job_id)
+                shutil.rmtree(J.job_dir(job_id), ignore_errors=True)
+            J._cond.notify_all()
 
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+
+@app.post("/api/jobs")
+async def api_create_job(request: Request):
+    body = await request.json()
+    meta = {
+        "source_kind": "url" if body.get("url") else "text",
+        "source_name": (body.get("url") or "pasted text")[:200],
+        "title": (body.get("url") or "pasted text")[:80],
+        "k": int(body.get("k", 1)),
+        "prompt": body.get("prompt", DEFAULT_PROMPT),
+        "dedup_threshold": float(body.get("dedup_threshold", 0.90)),
+        "dedup_field": body.get("dedup_field", "triple"),
+        "dedup_model": body.get("dedup_model", ""),
+    }
+    src = json.dumps({"url": body.get("url", ""), "text": body.get("text", "")}).encode()
+    job_id = await J.create_job(meta, src, "input.json")
+    return {"job_id": job_id}
 
 
-@app.post("/api/extract-zip")
-async def extract_zip(
+@app.post("/api/jobs-zip")
+async def api_create_job_zip(
     file: UploadFile = File(...),
     k: int = Form(1),
     prompt: str = Form(DEFAULT_PROMPT),
@@ -472,138 +612,84 @@ async def extract_zip(
     dedup_field: str = Form("triple"),
     dedup_model: str = Form(""),
 ):
-    k_rounds = max(1, min(10, int(k)))
-    extraction_prompt = (prompt or DEFAULT_PROMPT).strip()
-    dedup_enabled = bool(dedup_model)
     raw = await file.read()
+    meta = {
+        "source_kind": "zip",
+        "source_name": file.filename,
+        "title": file.filename,
+        "k": int(k),
+        "prompt": prompt,
+        "dedup_threshold": float(dedup_threshold),
+        "dedup_field": dedup_field,
+        "dedup_model": dedup_model,
+    }
+    job_id = await J.create_job(meta, raw, file.filename)
+    return {"job_id": job_id}
 
-    async def event_stream():
-        global _active_extractions, _queue_counter, _done_counter
-        _queue_counter += 1
-        _active_extractions += 1
-        tmpdir = tempfile.mkdtemp(prefix="kizip_")
-        zip_path = os.path.join(tmpdir, "upload.zip")
-        extract_dir = os.path.join(tmpdir, "extracted")
-        os.makedirs(extract_dir, exist_ok=True)
+
+@app.get("/api/jobs")
+async def api_list_jobs():
+    return {"jobs": J.list_jobs(), "current": J._current["job_id"]}
+
+
+@app.get("/api/jobs/{job_id}")
+async def api_get_job(job_id: str):
+    m = J.get_job(job_id)
+    if not m:
+        return {"error": "no such job"}
+    return m
+
+
+@app.get("/api/jobs/{job_id}/jsonl")
+async def api_job_jsonl(job_id: str):
+    return {"jsonl": J.read_jsonl(job_id), "meta": J.get_job(job_id)}
+
+
+@app.post("/api/jobs/{job_id}/pause")
+async def api_pause_job(job_id: str):
+    J._user_held[job_id] = True
+    return await J.pause_job(job_id)
+
+
+@app.post("/api/jobs/{job_id}/resume")
+async def api_resume_job(job_id: str):
+    return await J.resume_job(job_id)
+
+
+@app.delete("/api/jobs/{job_id}")
+async def api_delete_job(job_id: str):
+    return await J.delete_job(job_id)
+
+
+@app.get("/api/jobs/{job_id}/events")
+async def api_job_events(job_id: str):
+    """Subscribe to live events for a job. Replays prior facts first so a late
+    viewer rebuilds the full graph, then streams new events."""
+    async def gen():
+        q = J.subscribe(job_id)
+        # initial snapshot: replay existing jsonl + status
+        prior = J.read_jsonl(job_id)
+        if prior.strip():
+            facts = [json.loads(l) for l in prior.splitlines() if l.strip()]
+            yield f"data: {json.dumps({'type': 'replay', 'facts': facts})}\n\n"
+        m = J.get_job(job_id)
+        if m:
+            yield f"data: {json.dumps({'type': 'job_status', 'meta': m})}\n\n"
         try:
-            with open(zip_path, "wb") as f:
-                f.write(raw)
-            try:
-                files = list_zip_files(zip_path, extract_dir)
-            except zipfile.BadZipFile:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'Not a valid zip file'})}\n\n"
-                return
-            if not files:
-                yield f"data: {json.dumps({'type': 'error', 'message': 'No supported text files found in zip'})}\n\n"
-                return
-
-            file_list = [f["name"] for f in files]
-            yield f"data: {json.dumps({'type': 'filelist', 'files': file_list})}\n\n"
-
-            # dedup state shared across all files (cross-file dedup)
-            existing_embs: list = []
-            existing_indices: list = []
-            total_facts = 0
-            total_dupes = 0
-            total_tokens = 0
-            total_start = time.time()
-            all_facts_list = []
-
-            for fi, entry in enumerate(files):
-                fname = entry["name"]
-                yield f"data: {json.dumps({'type': 'file_start', 'file_index': fi, 'file': fname})}\n\n"
-                doc_text = read_file_text(entry["path"], fname)
-                truncated = len(doc_text) > MAX_INPUT_CHARS
-                if truncated:
-                    doc_text = doc_text[:MAX_INPUT_CHARS]
-                if not doc_text.strip():
-                    yield f"data: {json.dumps({'type': 'file_end', 'file_index': fi, 'file': fname, 'file_facts': 0, 'skipped': True})}\n\n"
-                    continue
-                docid = hashlib.md5(doc_text[:500].encode()).hexdigest()[:8]
-                file_facts = 0
-                for r in range(1, k_rounds + 1):
-                    seed = random.randint(1, 999999)
-                    async for event in stream_single_extraction(
-                        doc_text, extraction_prompt, "", docid,
-                        round_num=r, seed=seed,
-                        fact_offset=total_facts,
-                        existing_embs=existing_embs,
-                        existing_indices=existing_indices,
-                        dedup_threshold=dedup_threshold, dedup_field=dedup_field,
-                        dedup_enabled=dedup_enabled, source_file=fname,
-                    ):
-                        yield event
-                        if event.startswith("data: "):
-                            try:
-                                d = json.loads(event[6:])
-                                if d.get("type") == "round_end":
-                                    total_facts += d["round_facts"]
-                                    total_dupes += d["round_dupes"]
-                                    total_tokens += d["tokens"]
-                                    file_facts += d["round_facts"]
-                                elif d.get("type") == "fact":
-                                    all_facts_list.append({**d["fact"], "_is_duplicate": d["is_duplicate"], "_max_similarity": d["max_similarity"]})
-                            except Exception:
-                                pass
-                yield f"data: {json.dumps({'type': 'file_end', 'file_index': fi, 'file': fname, 'file_facts': file_facts})}\n\n"
-
-            total_elapsed = time.time() - total_start
-            overall_tps = total_tokens / total_elapsed if total_elapsed > 0 else 0
-            unique_facts = total_facts - total_dupes
-            # JSONL: one line per fact (all facts, dup flag included)
-            jsonl_lines = []
-            for f in all_facts_list:
-                clean = {k2: v for k2, v in f.items() if not k2.startswith("_")}
-                clean["is_duplicate"] = f.get("_is_duplicate", False)
-                jsonl_lines.append(json.dumps(clean, ensure_ascii=False))
-            jsonl_text = "\n".join(jsonl_lines)
-            yield f"data: {json.dumps({'type': 'done', 'k_rounds': k_rounds, 'num_files': len(files), 'total_facts': total_facts, 'unique_facts': unique_facts, 'duplicate_facts': total_dupes, 'total_tokens': total_tokens, 'elapsed': round(total_elapsed, 1), 'tps': round(overall_tps, 1), 'jsonl': jsonl_text})}\n\n"
-        except Exception as e:
-            import traceback; traceback.print_exc()
-            yield f"data: {json.dumps({'type': 'error', 'message': str(e)})}\n\n"
+            while True:
+                try:
+                    ev = await asyncio.wait_for(q.get(), timeout=15)
+                    yield f"data: {json.dumps(ev)}\n\n"
+                    if ev.get("type") in ("done", "error"):
+                        # keep open briefly so client gets it, then end
+                        break
+                except asyncio.TimeoutError:
+                    yield ": keepalive\n\n"
         finally:
-            shutil.rmtree(tmpdir, ignore_errors=True)
-            _active_extractions -= 1
-            _done_counter += 1
-
-    return StreamingResponse(event_stream(), media_type="text/event-stream")
+            J.unsubscribe(job_id, q)
+    return StreamingResponse(gen(), media_type="text/event-stream")
 
 
-# Track active extractions and queue
-import asyncio
-_active_extractions = 0
-_queue_counter = 0  # total requests received
-_done_counter = 0   # total requests completed
-
-DEFAULT_ZIP_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "jina-corpus.zip")
-DEFAULT_ZIP_NAME = "jina-corpus.zip"
-
-@app.get("/api/default-zip-info")
-async def default_zip_info():
-    if not os.path.exists(DEFAULT_ZIP_PATH):
-        return {"available": False}
-    try:
-        with zipfile.ZipFile(DEFAULT_ZIP_PATH) as zf:
-            n = sum(1 for i in zf.infolist() if not i.is_dir())
-    except Exception:
-        n = 0
-    return {"available": True, "name": DEFAULT_ZIP_NAME, "files": n,
-            "size_mb": round(os.path.getsize(DEFAULT_ZIP_PATH) / 1024 / 1024, 1)}
-
-@app.get("/api/default-zip")
-async def default_zip():
-    if not os.path.exists(DEFAULT_ZIP_PATH):
-        return {"available": False}
-    return FileResponse(DEFAULT_ZIP_PATH, media_type="application/zip", filename=DEFAULT_ZIP_NAME)
-
-@app.get("/api/default-prompt")
-async def get_default_prompt():
-    return {"prompt": DEFAULT_PROMPT}
-
-@app.get("/api/busy")
-async def get_busy():
-    queued = _queue_counter - _done_counter
-    return {"busy": _active_extractions > 0, "active": _active_extractions, "queued": queued, "total": _queue_counter}
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -614,6 +700,8 @@ async def index():
 @app.on_event("startup")
 async def startup():
     get_dedup_model()
+    J.reconcile_on_startup()
+    asyncio.create_task(_worker())
 
 
 
@@ -682,6 +770,20 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
 .dropzone{border:1px dashed var(--border);border-radius:0;padding:18px 12px;text-align:center;cursor:pointer;color:var(--text3);font-size:11px;transition:all .12s;background:var(--bg)}
 .dropzone:hover,.dropzone.drag{border-style:solid;color:var(--text);background:var(--bg3)}
 .dropzone b{color:var(--text);font-weight:700}
+
+/* JOBS LIST */
+.jobs-list{display:flex;flex-direction:column;gap:0;max-height:200px;overflow-y:auto;border:1px solid var(--border);background:var(--bg)}
+.jb{display:flex;align-items:center;gap:6px;padding:5px 7px;font-size:11px;font-family:var(--mono);border-bottom:1px solid var(--border-soft);cursor:pointer}
+.jb:last-child{border-bottom:none}
+.jb:hover{background:var(--bg3)}
+.jb.active{background:var(--black);color:#fff}
+.jb.active .jb-meta,.jb.active .jb-st{color:#fff}
+.jb-st{width:12px;flex-shrink:0;text-align:center;color:var(--text2)}
+.jb-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.jb-meta{color:var(--text3);font-size:10px;flex-shrink:0}
+.jb-btns{display:flex;gap:2px;flex-shrink:0}
+.jb-x{background:none;border:none;color:inherit;opacity:.55;cursor:pointer;font-size:11px;padding:0 2px;line-height:1}
+.jb-x:hover{opacity:1}
 
 /* FILE LIST */
 .filelist{display:flex;flex-direction:column;gap:0;max-height:200px;overflow-y:auto;border:1px solid var(--border);border-radius:0;background:var(--bg)}
@@ -803,9 +905,11 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
       </div>
     </div>
 
-    <div style="display:flex;gap:6px">
-      <button class="btn" id="extract-btn" onclick="extract()" style="flex:1">Extract</button>
-      <button class="btn" id="pause-btn" onclick="togglePause()" style="flex:0 0 92px;display:none">Pause</button>
+    <button class="btn" id="extract-btn" onclick="extract()">Extract</button>
+
+    <div class="section hidden" id="jobs-section">
+      <div class="section-title">Jobs (queue)</div>
+      <div class="jobs-list" id="jobs-list"></div>
     </div>
 
     <div class="section hidden" id="files-section">
@@ -823,8 +927,6 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
     </div>
 
     <div id="status-area"></div>
-
-    <div id="busy-banner" class="busy-banner" style="display:none"><div class="busy-dot"></div><span id="busy-text">Server busy</span></div>
   </div>
 
   <div class="main">
@@ -1031,34 +1133,15 @@ function setFileState(i,state,count){
 }
 function updateFilesProgress(done,total){document.getElementById('files-progress').textContent=done+'/'+total}
 
-// ---------- Extraction ----------
-let totalTps=0;
-// ---------- Pause / resume ----------
-// Pause works by stopping reads on the SSE stream; TCP back-pressure suspends
-// the server-side LLM generation too, so it's a real pause, not just UI.
-let _paused=false, _resumeWaiters=[];
-function setPaused(p){
-  _paused=p;
-  const pb=document.getElementById('pause-btn');
-  pb.textContent=p?'Resume':'Pause';
-  if(!p){ const w=_resumeWaiters; _resumeWaiters=[]; w.forEach(fn=>fn()); }
-}
-function togglePause(){
-  setPaused(!_paused);
-  const st=document.getElementById('status-area');
-  if(_paused){ st.innerHTML='<div class="status-msg">Paused</div>'; }
-}
-function waitIfPaused(){
-  if(!_paused)return Promise.resolve();
-  return new Promise(res=>_resumeWaiters.push(res));
-}
+// ---------- Job-based extraction ----------
+// Each Extract creates a server-side JOB. The single-slot scheduler runs one job
+// at a time; a new job preempts the running one (which goes to the paused pool and
+// auto-backfills later). We subscribe to /api/jobs/{id}/events for live updates,
+// and can reload any past job's jsonl into the graph.
+let viewingJob=null;       // job_id currently rendered in the graph
+let eventAbort=null;       // AbortController for the current event stream
 
-async function extract(){
-  const btn=document.getElementById('extract-btn');
-  btn.disabled=true;btn.textContent='Extracting...';
-  const pb=document.getElementById('pause-btn');pb.style.display='block';setPaused(false);
-  window._selfExtracting=true;
-  // reset
+function resetGraphView(){
   jsonlLines=[];graphNodes=new Map();graphLinks=[];
   document.getElementById('graph-empty').classList.add('hidden');
   document.getElementById('graph-overlay').classList.remove('hidden');
@@ -1067,113 +1150,156 @@ async function extract(){
   document.getElementById('s-edges').textContent='0';
   document.getElementById('s-nodes').textContent='0';
   document.getElementById('s-tps').textContent='0';
-  document.getElementById('files-section').classList.add('hidden');
-  document.getElementById('status-area').innerHTML='';
   initGraph();refreshGraph();
+}
+function ingestFact(rec){
+  jsonlLines.push(JSON.stringify(rec));
+  if(!rec.is_duplicate){ addFactEdge(rec); }
+}
 
+async function extract(){
   const k=parseInt(document.getElementById('k-input').value)||1;
   const prompt=document.getElementById('prompt-edit').value;
   const threshold=parseFloat(document.getElementById('dedup-slider').value);
   const dedupField=document.getElementById('dedup-field').value;
   const dedupModel=document.getElementById('dedup-model').value;
-
-  let resp;
+  const btn=document.getElementById('extract-btn');
+  btn.disabled=true;btn.textContent='Submitting...';
   try{
+    let job_id;
     if(currentTab==='zip'){
       if(!zipFileObj){fail('Choose a .zip file first');return;}
       const fd=new FormData();
       fd.append('file',zipFileObj);
       fd.append('k',k);fd.append('prompt',prompt);
       fd.append('dedup_threshold',threshold);fd.append('dedup_field',dedupField);fd.append('dedup_model',dedupModel);
-      resp=await fetch('/api/extract-zip',{method:'POST',body:fd});
+      const r=await fetch('/api/jobs-zip',{method:'POST',body:fd});
+      job_id=(await r.json()).job_id;
     }else{
       const payload={k,prompt,dedup_threshold:threshold,dedup_field:dedupField,dedup_model:dedupModel};
       if(currentTab==='url')payload.url=document.getElementById('url').value;
       else payload.text=document.getElementById('text-paste').value;
-      resp=await fetch('/api/extract',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      const r=await fetch('/api/jobs',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
+      job_id=(await r.json()).job_id;
     }
-    await consume(resp,k);
+    document.getElementById('status-area').innerHTML='<div class="status-msg"><span class="spinner"></span>Job '+job_id.slice(0,6)+' queued</div>';
+    await viewJob(job_id);
+    refreshJobs();
   }catch(e){fail(e.message);}
-  btn.disabled=false;btn.textContent='Extract';window._selfExtracting=false;
-  document.getElementById('pause-btn').style.display='none';setPaused(false);
+  btn.disabled=false;btn.textContent='Extract';
 }
 function fail(msg){
   document.getElementById('status-area').innerHTML='<div class="status-msg err">'+esc(msg)+'</div>';
   document.getElementById('extract-btn').disabled=false;
   document.getElementById('extract-btn').textContent='Extract';
-  document.getElementById('pause-btn').style.display='none';setPaused(false);
-  window._selfExtracting=false;
 }
 
-async function consume(resp,k){
-  const reader=resp.body.getReader();const dec=new TextDecoder();let buf='';
-  let totalFiles=0, doneFiles=0;
+// Subscribe to a job's live event stream and render into the graph.
+async function viewJob(job_id){
+  if(eventAbort){ eventAbort.abort(); eventAbort=null; }
+  viewingJob=job_id;
+  resetGraphView();
+  document.getElementById('files-section').classList.add('hidden');
+  const ac=new AbortController(); eventAbort=ac;
+  let resp;
+  try{ resp=await fetch('/api/jobs/'+job_id+'/events',{signal:ac.signal}); }
+  catch(e){ return; }
+  const reader=resp.body.getReader(); const dec=new TextDecoder(); let buf='';
+  let fileNames=[];
   while(true){
-    await waitIfPaused();
-    const{done,value}=await reader.read();if(done)break;
-    buf+=dec.decode(value,{stream:true});
-    const lines=buf.split('\n');buf=lines.pop();
+    let chunk; try{ chunk=await reader.read(); }catch(e){ break; }
+    if(chunk.done)break;
+    buf+=dec.decode(chunk.value,{stream:true});
+    const lines=buf.split('\n'); buf=lines.pop();
     for(const line of lines){
       if(!line.startsWith('data: '))continue;
       let d;try{d=JSON.parse(line.slice(6));}catch(e){continue;}
       switch(d.type){
+        case 'replay':
+          // full rebuild from persisted facts
+          jsonlLines=[];graphNodes=new Map();graphLinks=[];
+          for(const rec of d.facts) ingestFact(rec);
+          refreshGraph();setTimeout(zoomFit,200);
+          document.getElementById('dl-btn').disabled=jsonlLines.length===0;
+          break;
+        case 'job_status':
+          renderJobStatusBadge(d.meta);break;
         case 'status':
           document.getElementById('status-area').innerHTML='<div class="status-msg"><span class="spinner"></span>'+esc(d.message)+'</div>';break;
         case 'fetched':
-          document.getElementById('status-area').innerHTML='<div class="status-msg"><span class="spinner"></span>'+esc(d.title||'')+' ('+d.chars.toLocaleString()+' chars)</div>';break;
+          document.getElementById('status-area').innerHTML='<div class="status-msg"><span class="spinner"></span>'+esc(d.title||'')+' ('+(d.chars||0).toLocaleString()+' chars)</div>';break;
         case 'filelist':
-          totalFiles=d.files.length;renderFileList(d.files);break;
+          fileNames=d.files;renderFileList(d.files);
+          (d.done_files||[]).forEach(n=>{const i=fileNames.indexOf(n);if(i>=0)setFileState(i,'done');});
+          updateFilesProgress((d.done_files||[]).length,fileNames.length);break;
         case 'file_start':
           setFileState(d.file_index,'running');break;
-        case 'file_end':
-          doneFiles++;setFileState(d.file_index,d.skipped?'skip':'done',d.file_facts);updateFilesProgress(doneFiles,totalFiles);break;
-        case 'round_start':
-          document.getElementById('status-area').innerHTML='<div class="status-msg"><span class="spinner"></span>Round '+d.round+'/'+k+' · seed '+d.seed+'</div>';break;
+        case 'file_end':{
+          setFileState(d.file_index,d.skipped?'skip':'done',d.file_facts);
+          const done=document.querySelectorAll('.fl-check,.fl-skip').length;
+          updateFilesProgress(done,fileNames.length||done);break;}
         case 'metrics':
           document.getElementById('s-tps').textContent=d.tps;break;
         case 'fact':
-          // one jsonl line per fact (one edge per line)
-          const rec={...d.fact};rec.is_duplicate=d.is_duplicate;
-          jsonlLines.push(JSON.stringify(rec));
-          // graph: only draw unique facts (skip duplicates)
-          if(!d.is_duplicate){ addFactEdge(rec);refreshGraph(); }
-          document.getElementById('s-tps').textContent=d.tps;
-          break;
-        case 'round_end':
-          document.getElementById('s-tps').textContent=d.tps;break;
+          ingestFact(d.fact);refreshGraph();
+          document.getElementById('s-tps').textContent=d.tps||document.getElementById('s-tps').textContent;
+          document.getElementById('dl-btn').disabled=false;break;
         case 'done':
-          let msg=d.unique_facts+' unique facts';
-          if(d.num_files!=null)msg+=' · '+d.num_files+' files';
-          msg+=' · '+(d.duplicate_facts||0)+' dup · '+d.elapsed+'s';
-          document.getElementById('status-area').innerHTML='<div class="status-msg ok">'+msg+'</div>';
-          // prefer server jsonl when present (zip path)
-          if(d.jsonl!=null && d.jsonl!=='') jsonlLines=d.jsonl.split('\n').filter(x=>x);
-          document.getElementById('dl-btn').disabled=jsonlLines.length===0;
-          setTimeout(zoomFit,300);
-          break;
+          document.getElementById('status-area').innerHTML='<div class="status-msg ok">'+(d.unique_facts||0)+' unique facts'+(d.num_files!=null?' · '+d.num_files+' files':'')+' · '+(d.duplicate_facts||0)+' dup</div>';
+          setTimeout(zoomFit,200);refreshJobs();break;
         case 'error':
-          document.getElementById('status-area').innerHTML='<div class="status-msg err">'+esc(d.message)+'</div>';break;
+          document.getElementById('status-area').innerHTML='<div class="status-msg err">'+esc(d.message)+'</div>';refreshJobs();break;
       }
     }
   }
-  document.getElementById('dl-btn').disabled=jsonlLines.length===0;
 }
+
+function renderJobStatusBadge(m){
+  if(!m)return;
+  const map={queued:'queued',running:'running',paused:'paused (backfill)',held:'paused',done:'done',failed:'failed',pausing:'pausing'};
+  document.getElementById('status-area').innerHTML='<div class="status-msg">'+esc(m.title||'')+' — '+(map[m.status]||m.status)+'</div>';
+}
+
+// ---------- Jobs panel ----------
+async function refreshJobs(){
+  let data;try{ data=await (await fetch('/api/jobs')).json(); }catch(e){ return; }
+  const jobs=data.jobs||[];
+  const wrap=document.getElementById('jobs-list');
+  if(!jobs.length){ document.getElementById('jobs-section').classList.add('hidden'); return; }
+  document.getElementById('jobs-section').classList.remove('hidden');
+  const stIcon={running:'▶',queued:'…',paused:'⏸',held:'⏸',pausing:'⏸',done:'✓',failed:'✕'};
+  wrap.innerHTML=jobs.map(j=>{
+    const active=j.job_id===viewingJob?' active':'';
+    const prog=j.num_files?(' '+(j.files_done||0)+'/'+j.num_files):'';
+    const canPause=(j.status==='running'||j.status==='queued');
+    const canResume=(j.status==='paused'||j.status==='held'||j.status==='failed');
+    let btns='<button class="jb-x" onclick="event.stopPropagation();delJob(\''+j.job_id+'\')" title="delete">✕</button>';
+    if(canPause)btns='<button class="jb-x" onclick="event.stopPropagation();pauseJob(\''+j.job_id+'\')" title="pause">⏸</button>'+btns;
+    if(canResume)btns='<button class="jb-x" onclick="event.stopPropagation();resumeJob(\''+j.job_id+'\')" title="resume">▶</button>'+btns;
+    return '<div class="jb'+active+'" onclick="viewJob(\''+j.job_id+'\');highlightJob(\''+j.job_id+'\')">'
+      +'<span class="jb-st" title="'+j.status+'">'+(stIcon[j.status]||'·')+'</span>'
+      +'<span class="jb-name" title="'+esc(j.title||'')+'">'+esc(j.title||j.job_id)+'</span>'
+      +'<span class="jb-meta">'+ (j.unique_facts||0) +'e'+prog+'</span>'
+      +'<span class="jb-btns">'+btns+'</span></div>';
+  }).join('');
+}
+function highlightJob(id){viewingJob=id;refreshJobs();}
+async function pauseJob(id){await fetch('/api/jobs/'+id+'/pause',{method:'POST'});refreshJobs();}
+async function resumeJob(id){await fetch('/api/jobs/'+id+'/resume',{method:'POST'});refreshJobs();if(id===viewingJob)viewJob(id);}
+async function delJob(id){if(!confirm('Delete this job?'))return;await fetch('/api/jobs/'+id,{method:'DELETE'});if(id===viewingJob){viewingJob=null;}refreshJobs();}
 
 function downloadJsonl(){
   const blob=new Blob([jsonlLines.join('\n')+'\n'],{type:'application/x-ndjson'});
   const a=document.createElement('a');a.href=URL.createObjectURL(blob);
   const ts=new Date().toISOString().slice(0,19).replace(/[:T]/g,'-');
-  a.download='ki-facts-'+ts+'.jsonl';a.click();URL.revokeObjectURL(a.href);
+  a.download='kg-facts-'+ts+'.jsonl';a.click();URL.revokeObjectURL(a.href);
 }
 
 document.getElementById('url').addEventListener('keydown',e=>{if(e.key==='Enter')extract()});
 window.addEventListener('resize',()=>{if(Graph){const m=document.querySelector('.main');Graph.width(m.clientWidth).height(m.clientHeight);zoomFit();}});
 
-setInterval(()=>{fetch('/api/busy').then(r=>r.json()).then(d=>{
-  const showBusy=d.busy && !window._selfExtracting;
-  document.getElementById('busy-banner').style.display=showBusy?'flex':'none';
-  if(showBusy)document.getElementById('busy-text').textContent='Server busy · Queue: '+d.queued+' request'+(d.queued>1?'s':'');
-}).catch(()=>{})},3000);
+refreshJobs();
+setInterval(refreshJobs,3000);
 </script>
 </body>
 </html>"""
