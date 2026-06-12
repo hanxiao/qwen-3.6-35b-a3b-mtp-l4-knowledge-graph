@@ -974,6 +974,9 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
 .jb.active{background:var(--black);color:#fff}
 .jb.active .jb-meta,.jb.active .jb-st{color:#fff}
 .jb-st{width:12px;flex-shrink:0;text-align:center;color:var(--text2)}
+.jb-st.running{color:var(--text);animation:jbpulse 1.1s ease-in-out infinite}
+.jb.active .jb-st.running{color:#fff}
+@keyframes jbpulse{0%,100%{opacity:1;transform:scale(1)}50%{opacity:.3;transform:scale(.78)}}
 .jb-name{flex:1;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
 .jb-meta{color:var(--text3);font-size:10px;flex-shrink:0}
 .jb-btns{display:flex;gap:2px;flex-shrink:0}
@@ -1664,7 +1667,9 @@ function prefillFromJob(m){
 // ---------- Jobs panel ----------
 async function refreshJobs(){
   let data;try{ data=await (await fetch(API_BASE+'/api/jobs')).json(); }catch(e){ return; }
-  const jobs=data.jobs||[];
+  const jobs=(data.jobs||[]).slice();
+  // Running jobs always pinned to the top of the list (stable order otherwise).
+  jobs.sort((a,b)=>((b.status==='running')-(a.status==='running')));
   const wrap=document.getElementById('jobs-list');
   if(!jobs.length){ document.getElementById('jobs-section').classList.add('hidden'); return; }
   document.getElementById('jobs-section').classList.remove('hidden');
@@ -1681,8 +1686,9 @@ async function refreshJobs(){
     if(canDelete)btns+='<button class="jb-x" onclick="event.stopPropagation();delJob(\''+j.job_id+'\')" title="delete">✕</button>';
     if(canPause)btns='<button class="jb-x" onclick="event.stopPropagation();pauseJob(\''+j.job_id+'\')" title="pause">⏸</button>'+btns;
     if(canResume)btns='<button class="jb-x" onclick="event.stopPropagation();resumeJob(\''+j.job_id+'\')" title="resume">▶</button>'+btns;
+    const stCls='jb-st'+(j.status==='running'?' running':'');
     return '<div class="jb'+active+'" onclick="viewJob(\''+j.job_id+'\');highlightJob(\''+j.job_id+'\')">'
-      +'<span class="jb-st" title="'+j.status+'">'+(stIcon[j.status]||'·')+'</span>'
+      +'<span class="'+stCls+'" title="'+j.status+'">'+(stIcon[j.status]||'·')+'</span>'
       +'<span class="jb-name" title="'+esc(j.title||'')+'">'+esc(j.title||j.job_id)+'</span>'
       +'<span class="jb-meta">'+ (j.unique_facts||0) +' edges'+prog+'</span>'
       +'<span class="jb-btns">'+btns+'</span></div>';
