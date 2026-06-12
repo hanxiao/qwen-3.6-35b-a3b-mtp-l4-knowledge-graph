@@ -1712,8 +1712,13 @@ async function initDefaultView(){
     const data=await (await fetch(API_BASE+'/api/jobs')).json();
     const jobs=data.jobs||[];
     if(!jobs.length)return;
-    const pick=jobs.find(j=>/jina-corpus/i.test(j.title||''))
-      || jobs.find(j=>(j.unique_facts||0)>0)
+    // Prefer the COMPLETED jina-corpus job with the most edges (avoid a partial/
+    // running re-run that happens to share the same title).
+    const score=j=>((j.status==='done'?1e9:0)+(j.unique_facts||0));
+    const corpus=jobs.filter(j=>/jina-corpus/i.test(j.title||''))
+                     .sort((a,b)=>score(b)-score(a));
+    const pick=corpus[0]
+      || jobs.filter(j=>(j.unique_facts||0)>0).sort((a,b)=>score(b)-score(a))[0]
       || jobs[0];
     if(!pick)return;
     autoPathPending=true;
