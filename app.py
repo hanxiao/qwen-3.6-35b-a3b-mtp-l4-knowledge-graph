@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""KI Extractor - Knowledge Indicator extraction via Qwen3.6 MTP + jina-v5-nano dedup."""
+"""Knowledge Graph Extractor - LLM triple extraction (Qwen3.6 MTP) + jina-v5-nano semantic dedup."""
 
 import json, time, hashlib, re, random, os, io, zipfile, tempfile, shutil, asyncio, numpy as np
 from typing import AsyncGenerator
@@ -102,18 +102,21 @@ def embed_fact(fact: dict, field: str = "triple") -> np.ndarray:
     return emb[0]
 
 def check_duplicate(new_emb: np.ndarray, existing_embs: list, existing_indices: list, threshold: float) -> tuple[bool, float, list]:
-    """Returns (is_dup, max_sim, dup_of_list) where dup_of_list has {index, similarity} for all matches above threshold."""
+    """Returns (is_dup, max_sim, dup_of_list) where dup_of_list has {index, similarity}
+    for all matches at/above threshold. Vectorized (single BLAS matvec) so it stays
+    fast even with thousands of accumulated embeddings."""
     if not existing_embs:
         return False, 0.0, []
-    sims = [float(np.dot(new_emb, e)) for e in existing_embs]
-    max_sim = max(sims)
-    dup_of = []
-    if max_sim >= threshold:
-        for i, s in enumerate(sims):
-            if s >= threshold:
-                dup_of.append({"index": existing_indices[i], "similarity": round(s, 4)})
-        dup_of.sort(key=lambda x: -x["similarity"])
-    return max_sim >= threshold, max_sim, dup_of
+    sims = np.asarray(existing_embs) @ new_emb   # (n,) cosine sims (embs are normalized)
+    max_sim = float(sims.max())
+    if max_sim < threshold:
+        return False, max_sim, []
+    hits = np.nonzero(sims >= threshold)[0]
+    dup_of = sorted(
+        ({"index": existing_indices[i], "similarity": round(float(sims[i]), 4)} for i in hits),
+        key=lambda x: -x["similarity"],
+    )
+    return True, max_sim, dup_of
 
 
 DEFAULT_PROMPT = """Extract a knowledge graph from the document. Return a JSON object with key
@@ -523,7 +526,8 @@ async def run_job(job_id: str):
                 return
             meta["num_files"] = len(files)
             emit({"type": "filelist", "files": [f["name"] for f in files], "done_files": sorted(done_files)})
-            work = [(f["name"], read_file_text(f["path"], f["name"])) for f in files]
+            # On resume, only read files we still need (skip already-done ones).
+            work = [(f["name"], None if f["name"] in done_files else read_file_text(f["path"], f["name"])) for f in files]
             cleanup = lambda: shutil.rmtree(tmpdir, ignore_errors=True)
         else:
             payload = json.loads((d / "input.json").read_text())
