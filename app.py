@@ -16,7 +16,12 @@ app = FastAPI()
 LLAMA_URL = os.environ.get("LLAMA_URL", "http://localhost:8080")
 JINA_KEY = os.environ.get("JINA_API_KEY", "")
 CTX_SIZE = 16384
-MAX_INPUT_CHARS = 100000
+# The 16384-token ctx must hold the whole request (prompt + doc) AND the output
+# budget (max_tokens=8192). So the input side must stay <= ~8192 tokens. With the
+# instruction prompt ~1.4K tokens, that leaves ~6.5K tokens (~24K chars) for the
+# doc. Bigger docs (e.g. a 14-page arXiv PDF ~17K tokens) overflow ctx -> llama
+# returns 400 with zero generation. We truncate the doc to fit.
+MAX_INPUT_CHARS = 24000
 
 DEDUP_MODEL = None
 DEDUP_MODEL_NAME = "jinaai/jina-embeddings-v5-text-nano"
@@ -315,6 +320,12 @@ async def stream_single_extraction(
             "POST", f"{LLAMA_URL}/v1/chat/completions",
             json=payload, headers={"Content-Type": "application/json"},
         ) as response:
+            if response.status_code >= 400:
+                body = await response.aread()
+                msg = body.decode("utf-8", "ignore")[:300]
+                yield f"data: {json.dumps({'type': 'llm_error', 'round': round_num, 'status': response.status_code, 'message': msg})}\n\n"
+                yield f"data: {json.dumps({'type': 'round_end', 'round': round_num, 'round_facts': round_facts, 'round_dupes': round_dupes, 'tokens': 0, 'elapsed': 0, 'tps': 0, 'note': 'llm error'})}\n\n"
+                return
             async for line in response.aiter_lines():
                 if not line.startswith("data: "):
                     continue
@@ -496,6 +507,7 @@ async def run_job(job_id: str):
             docid = hashlib.md5(doc_text[:500].encode()).hexdigest()[:8]
             doc_text = doc_text[:MAX_INPUT_CHARS]
             file_facts = 0
+            file_llm_error = None
             for r in range(1, k_rounds + 1):
                 seed = random.randint(1, 999999)
                 async for event in stream_single_extraction(
@@ -521,10 +533,21 @@ async def run_job(job_id: str):
                         total_facts += ev["round_facts"]
                         total_dupes += ev["round_dupes"]
                         file_facts += ev["round_facts"]
+                    elif ev.get("type") == "llm_error":
+                        file_llm_error = f"llama {ev.get('status')}: {ev.get('message','')}"
+                        emit({"type": "warn", "file": fname, "message": file_llm_error})
                     elif ev.get("type") in ("metrics", "round_start"):
                         emit(ev)
+            # A single-document job (url/text) with an LLM error and no facts is a
+            # real failure -- surface it instead of a fake 'done, 0 facts'.
+            if file_llm_error and meta.get("source_kind") != "zip" and file_facts == 0:
+                cleanup(); jsonl_fh.close()
+                meta["error"] = file_llm_error; persist_progress("failed")
+                meta["finished"] = time.time(); J.save_meta(job_id)
+                emit({"type": "error", "message": file_llm_error})
+                return
             done_files.add(fname)
-            emit({"type": "file_end", "file_index": fi, "file": fname, "file_facts": file_facts})
+            emit({"type": "file_end", "file_index": fi, "file": fname, "file_facts": file_facts, "warn": file_llm_error})
             persist_progress("running")
             if paused_requested():
                 persist_progress("keep"); cleanup(); jsonl_fh.close(); return
@@ -1378,6 +1401,8 @@ async function viewJob(job_id){
         case 'done':
           document.getElementById('status-area').innerHTML='<div class="status-msg ok">'+(d.unique_facts||0)+' unique facts'+(d.num_files!=null?' · '+d.num_files+' files':'')+' · '+(d.duplicate_facts||0)+' dup</div>';
           setTimeout(zoomFit,200);refreshJobs();break;
+        case 'warn':
+          document.getElementById('status-area').innerHTML='<div class="status-msg err">'+esc(d.message)+'</div>';break;
         case 'error':
           document.getElementById('status-area').innerHTML='<div class="status-msg err">'+esc(d.message)+'</div>';refreshJobs();break;
       }
