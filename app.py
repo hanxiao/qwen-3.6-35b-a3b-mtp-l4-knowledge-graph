@@ -937,7 +937,7 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
     <button class="btn" id="extract-btn" onclick="extract()">Extract</button>
 
     <div class="section hidden" id="jobs-section">
-      <div class="section-title">Jobs (queue)</div>
+      <div class="section-title">Jobs</div>
       <div class="jobs-list" id="jobs-list"></div>
     </div>
 
@@ -1302,7 +1302,7 @@ async function refreshJobs(){
   const stIcon={running:'▶',queued:'…',paused:'⏸',held:'⏸',pausing:'⏸',done:'✓',failed:'✕'};
   wrap.innerHTML=jobs.map(j=>{
     const active=j.job_id===viewingJob?' active':'';
-    const prog=j.num_files?(' '+(j.files_done||0)+'/'+j.num_files):'';
+    const prog=j.num_files?(' · '+(j.files_done||0)+'/'+j.num_files+' files'):'';
     const canPause=(j.status==='running'||j.status==='queued');
     const canResume=(j.status==='paused'||j.status==='held'||j.status==='failed');
     let btns='<button class="jb-x" onclick="event.stopPropagation();delJob(\''+j.job_id+'\')" title="delete">✕</button>';
@@ -1311,7 +1311,7 @@ async function refreshJobs(){
     return '<div class="jb'+active+'" onclick="viewJob(\''+j.job_id+'\');highlightJob(\''+j.job_id+'\')">'
       +'<span class="jb-st" title="'+j.status+'">'+(stIcon[j.status]||'·')+'</span>'
       +'<span class="jb-name" title="'+esc(j.title||'')+'">'+esc(j.title||j.job_id)+'</span>'
-      +'<span class="jb-meta">'+ (j.unique_facts||0) +'e'+prog+'</span>'
+      +'<span class="jb-meta">'+ (j.unique_facts||0) +' edges'+prog+'</span>'
       +'<span class="jb-btns">'+btns+'</span></div>';
   }).join('');
 }
