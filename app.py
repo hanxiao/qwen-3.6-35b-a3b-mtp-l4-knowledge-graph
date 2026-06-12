@@ -824,6 +824,37 @@ async def favicon_ico():
 async def get_default_prompt():
     return {"prompt": DEFAULT_PROMPT}
 
+# Cache of latest jina.ai/news post URLs (refreshed hourly) for the default URL.
+_news_cache = {"urls": [], "ts": 0.0}
+
+@app.get("/api/latest-posts")
+async def latest_posts():
+    import time as _t
+    now = _t.time()
+    if _news_cache["urls"] and now - _news_cache["ts"] < 3600:
+        return {"posts": _news_cache["urls"]}
+    posts = []
+    try:
+        async with httpx.AsyncClient(timeout=30) as client:
+            r = await client.get(
+                "https://r.jina.ai/https://jina.ai/news",
+                headers={"Authorization": f"Bearer {JINA_KEY}", "Accept": "text/markdown"},
+            )
+            if r.status_code < 400:
+                seen = set()
+                for m in re.finditer(r"https://jina\.ai/news/[a-z0-9-]{12,}", r.text):
+                    u = m.group(0).rstrip("/")
+                    if u not in seen:
+                        seen.add(u); posts.append(u)
+                    if len(posts) >= 10:
+                        break
+    except Exception:
+        pass
+    if posts:
+        _news_cache["urls"] = posts
+        _news_cache["ts"] = now
+    return {"posts": posts or _news_cache["urls"]}
+
 @app.get("/api/default-zip-info")
 async def default_zip_info():
     if not os.path.exists(DEFAULT_ZIP_PATH):
@@ -1065,7 +1096,7 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
         <div class="tab" data-tab="text">Paste</div>
         <div class="tab" data-tab="zip">Zip</div>
       </div>
-      <div id="p-url"><input type="text" id="url" placeholder="https://..." value="https://jina.ai/news/jina-embeddings-v5-omni-multimodal-embeddings-for-text-image-audio-and-video/"></div>
+      <div id="p-url"><input type="text" id="url" placeholder="https://..." value="https://jina.ai/news"></div>
       <div id="p-text" class="hidden"><textarea id="text-paste" rows="5" placeholder="Paste markdown or plain text..."></textarea></div>
       <div id="p-zip" class="hidden">
         <div class="dropzone" id="dropzone">
@@ -1174,6 +1205,17 @@ fetch(API_BASE+'/api/default-prompt').then(r=>r.json()).then(d=>{
   defaultPrompt=d.prompt;
   document.getElementById('prompt-edit').value=d.prompt;
 });
+
+// Default URL: randomly rotate among the latest 10 jina.ai/news posts.
+fetch(API_BASE+'/api/latest-posts').then(r=>r.json()).then(d=>{
+  const posts=d.posts||[];
+  if(posts.length){
+    const el=document.getElementById('url');
+    // only set if the user hasn't already typed something
+    if(!el.dataset.touched){ el.value=posts[Math.floor(Math.random()*posts.length)]; }
+  }
+}).catch(()=>{});
+document.getElementById('url').addEventListener('input',function(){this.dataset.touched='1';});
 
 // Preload the bundled default corpus zip so the Zip tab works out of the box.
 let defaultZipLoaded=false;
