@@ -920,6 +920,8 @@ nav .gh:hover{color:var(--text)}
 .layout.collapsed .sidebar-toggle{left:0;border-left:none}
 
 .section-title{font-size:10px;font-weight:700;color:var(--text2);text-transform:uppercase;letter-spacing:1px;margin-bottom:6px}
+.newjob-box{position:relative;border:1px solid var(--border);padding:14px 12px 12px;display:flex;flex-direction:column;gap:14px;margin-top:4px}
+.newjob-title{position:absolute;top:-8px;left:10px;background:var(--bg2);padding:0 6px;font-size:10px;font-weight:700;color:var(--text);text-transform:uppercase;letter-spacing:1px}
 .prompt-toggle{cursor:pointer;user-select:none}
 .prompt-toggle:hover{color:var(--text)}
 .prompt-toggle span{display:inline-block;width:10px}
@@ -1054,6 +1056,8 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
       <div class="jobs-list" id="jobs-list"></div>
     </div>
 
+    <div class="newjob-box">
+    <div class="newjob-title">New Job</div>
     <div class="section">
       <div class="section-title">Source</div>
       <div class="tabs">
@@ -1119,6 +1123,7 @@ input[type="range"]:disabled::-webkit-slider-thumb{background:var(--text3)}
     </div>
 
     <button class="btn" id="extract-btn" onclick="extract()">Extract</button>
+    </div>
 
     <div class="section hidden" id="files-section">
       <div class="section-title" style="display:flex;justify-content:space-between"><span>Files</span><span id="files-progress" style="font-family:var(--mono);color:var(--text2)"></span></div>
@@ -1211,14 +1216,14 @@ if(window.matchMedia('(max-width:760px)').matches){
   document.getElementById('sidebar-toggle').textContent='›';
 }
 
-document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>{
-  const tab=t.dataset.tab;currentTab=tab;
-  document.querySelectorAll('.tab').forEach(x=>x.classList.remove('active'));
-  t.classList.add('active');
+function switchTab(tab){
+  currentTab=tab;
+  document.querySelectorAll('.tab').forEach(x=>x.classList.toggle('active',x.dataset.tab===tab));
   document.getElementById('p-url').classList.toggle('hidden',tab!=='url');
   document.getElementById('p-text').classList.toggle('hidden',tab!=='text');
   document.getElementById('p-zip').classList.toggle('hidden',tab!=='zip');
-}));
+}
+document.querySelectorAll('.tab').forEach(t=>t.addEventListener('click',()=>switchTab(t.dataset.tab)));
 
 // Zip picker + dnd
 const dz=document.getElementById('dropzone'), zf=document.getElementById('zip-file');
@@ -1585,6 +1590,22 @@ function renderJobStatusBadge(m){
   if(!m)return;
   const map={queued:'queued',running:'running',paused:'paused (backfill)',held:'paused',done:'done',failed:'failed',pausing:'pausing'};
   document.getElementById('status-area').innerHTML='<div class="status-msg">'+esc(m.title||'')+' — '+(map[m.status]||m.status)+'</div>';
+  prefillFromJob(m);
+}
+
+// Prefill the New Job form with a selected job's settings (params + dedup +
+// prompt + source). Lets the user clone/re-run a past job's config.
+function prefillFromJob(m){
+  if(!m)return;
+  if(m.k!=null){document.getElementById('k-input').value=m.k;}
+  if(m.dedup_model!=null){const el=document.getElementById('dedup-model');el.value=m.dedup_model;el.dispatchEvent(new Event('change'));}
+  if(m.dedup_field){document.getElementById('dedup-field').value=m.dedup_field;}
+  if(m.dedup_threshold!=null){const s=document.getElementById('dedup-slider');s.value=m.dedup_threshold;document.getElementById('dedup-val').textContent=(+m.dedup_threshold).toFixed(2);}
+  if(m.prompt){document.getElementById('prompt-edit').value=m.prompt;}
+  // restore source into the matching tab
+  if(m.source_kind==='url' && m.source_name){switchTab('url');document.getElementById('url').value=m.source_name;}
+  else if(m.source_kind==='text'){switchTab('text');}
+  else if(m.source_kind==='zip'){switchTab('zip');}
 }
 
 // ---------- Jobs panel ----------
