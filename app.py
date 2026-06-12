@@ -1603,6 +1603,7 @@ async function viewJob(job_id){
           for(const rec of d.facts) ingestFact(rec);
           refreshGraph();setTimeout(zoomFit,200);
           document.getElementById('dl-btn').disabled=jsonlLines.length===0;
+          if(autoPathPending){autoPathPending=false;if(graphLinks.length){setTimeout(()=>{if(!pathOn)toggleLongestPath();},300);}}
           break;
         case 'job_status':
           renderJobStatusBadge(d.meta);break;
@@ -1702,8 +1703,28 @@ function downloadJsonl(){
 document.getElementById('url').addEventListener('keydown',e=>{if(e.key==='Enter')extract()});
 window.addEventListener('resize',()=>{if(Graph){const m=document.querySelector('.main');Graph.width(m.clientWidth).height(m.clientHeight);zoomFit();}});
 
+let autoPathPending=false;  // set during first-load auto-select to flip longest path on
+
+// On first visit (no job being viewed yet), auto-select the jina-corpus job and
+// turn longest path ON so the landing page shows a populated, highlighted graph.
+async function initDefaultView(){
+  try{
+    const data=await (await fetch(API_BASE+'/api/jobs')).json();
+    const jobs=data.jobs||[];
+    if(!jobs.length)return;
+    const pick=jobs.find(j=>/jina-corpus/i.test(j.title||''))
+      || jobs.find(j=>(j.unique_facts||0)>0)
+      || jobs[0];
+    if(!pick)return;
+    autoPathPending=true;
+    await viewJob(pick.job_id);
+    highlightJob(pick.job_id);
+  }catch(e){}
+}
+
 refreshJobs();
 setInterval(refreshJobs,3000);
+initDefaultView();
 </script>
 </body>
 </html>"""
